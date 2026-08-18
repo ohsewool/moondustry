@@ -110,7 +110,7 @@
   </div>
   <div id="hotbar"></div>
   <div id="guide"></div>
-  <div id="tip">클릭·드래그: 건설 · R: 회전 · 우클릭: 판매 · 1~0: 선택 · M: 음소거 · Space: 일시정지</div>
+  <div id="tip">클릭·드래그: 건설 · R: 회전 · 우클릭: 판매 · 1~0: 선택 · 휠: 줌 · WASD/휠클릭: 이동 · Space: 일시정지</div>
   <div id="banner"></div>
   <div id="bpanel" style="position:fixed;display:none;z-index:15;background:rgba(15,15,22,0.95);border:1px solid #45454f;border-radius:10px;padding:10px 12px;font-size:12px;color:#e8e4d8;pointer-events:auto">
     <div id="bpname" style="margin-bottom:7px;font-weight:bold"></div>
@@ -151,7 +151,7 @@
 <script>
 'use strict';
 /* ══════════════ 기본 상수 ══════════════ */
-const TILE = 24, MW = 48, MH = 30;          // 타일 크기, 맵 크기
+const TILE = 24, MW = 80, MH = 50;          // 타일 크기, 맵 크기
 const WVW = MW*TILE, WVH = MH*TILE;         // 월드 픽셀 크기
 const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
 let scale = 1, offX = 0, offY = 0;
@@ -175,7 +175,7 @@ const DEFS = {
   junction: { name:'정션',     cost:5,   hp:60,  desc:'컨베이어 교차로 — 벨트가 서로 통과 (컨베이어를 가로질러 놓으면 자동 생성)' },
 };
 const ENAMES = { dagger:'대거', crawler:'크롤러', fortress:'포트리스', flier:'플라이어', boss:'⚠보스' };
-const TIP_DEFAULT = '클릭·드래그: 건설 · R: 회전 · 우클릭: 판매 · 1~0: 선택 · M: 음소거 · Space: 일시정지';
+const TIP_DEFAULT = '클릭·드래그: 건설 · R: 회전 · 우클릭: 판매 · 1~0: 선택 · 휠: 줌 · WASD/휠클릭: 이동 · Space: 일시정지';
 const HOTBAR = ['drill','conveyor','router','duo','wall','mender','scatter','lancer','smelter','spectre'];
 const TURRETS = new Set(['duo','scatter','lancer','spectre']);
 const DIRS = [{x:1,y:0},{x:0,y:1},{x:-1,y:0},{x:0,y:-1}];
@@ -307,7 +307,7 @@ let builds = [];         // 건물 목록
 let enemies = [], bullets = [], parts = [];
 let flow = null;         // 흐름장 (코어까지 거리)
 let core = null;
-let copper = 220, wave = 0, waveTimer = 45, inWave = false, spawnQueue = [];
+let copper = 220, wave = 0, waveTimer = 38, inWave = false, spawnQueue = [];
 let selected = null;     // 선택한 건설 타입
 let ghostRot = 0;        // 컨베이어 설치 방향 (0우 1하 2좌 3상)
 let speedMul = 1, paused = false, gameOver = false, kills = 0;
@@ -380,14 +380,14 @@ function genMap(){
   lane(spawns[2],c2,1);          // 아래 스폰은 병목1을 우회해 병목2로 직행
   lane(c2,{x:ccx,y:ccy+1},1);
   carve(c1.x,c1.y,2); carve(c2.x,c2.y,2); // 병목 아레나 (약간 넓게)
-  // ── 건설 포켓: 레인에 붙은 작은 공터 ──
+  // ── 건설 포켓: 레인에 붙은 공터 (공장 부지 — 큰 맵에선 넓게) ──
   let pockets=0, guard=0;
-  while(pockets<14 && guard++<600){
+  while(pockets<40 && guard++<2000){
     const x=Math.floor(rnd(7,MW-3)), y=Math.floor(rnd(2,MH-2));
     const t=map[y][x];
     if(!t.rock) continue;
     const nearFloor=[[1,0],[-1,0],[0,1],[0,-1]].some(([ox,oy])=>{ const n=tileAt(x+ox,y+oy); return n && !n.rock; });
-    if(nearFloor){ carve(x,y,Math.random()<0.5?1:2); pockets++; }
+    if(nearFloor){ const rr=Math.random(); carve(x,y,rr<0.35?1:(rr<0.8?2:3)); pockets++; }
   }
   // ── 광석: 코어 근처 소량(시작용 구리) + 병목·중간 레인 근처 다량(위험 보상, 티타늄 포함) ──
   const orePatch=(cx,cy,n,kind)=>{
@@ -413,11 +413,11 @@ function genMap(){
     orePatch(spot.x+Math.floor(rnd(-3,4)), spot.y+Math.floor(rnd(-3,4)), 4, 't');
   }
   let rPlaced=0, tPlaced=0; sGuard=0;
-  while((rPlaced<3 || tPlaced<2) && sGuard++<800){
+  while((rPlaced<5 || tPlaced<3) && sGuard++<1400){
     const x=Math.floor(rnd(10,MW-14)), y=Math.floor(rnd(2,MH-2));
     if(map[y][x].rock) continue;
     if(spawns.some(s=>dist2(x,y,s.x,s.y)<64)) continue;
-    if(tPlaced<2){ if(orePatch(x,y,4,'t')>=3) tPlaced++; }
+    if(tPlaced<3){ if(orePatch(x,y,4,'t')>=3) tPlaced++; }
     else if(orePatch(x,y,5)>=3) rPlaced++;
   }
   // 스폰·코어 타일 정리
@@ -919,11 +919,24 @@ let last=0, started=false;
 function tick(ts){
   requestAnimationFrame(tick);
   const dt0=Math.min(0.05,(ts-last)/1000); last=ts;
+  camPan(dt0);
   if(!started || gameOver) { render(); return; }
   if(netMode==='guest'){ updateHUD(); render(); return; } // 게스트는 시뮬레이션 없이 스냅샷 렌더만
   if(paused){ render(); return; }
-  const dt=dt0*speedMul;
+  const dtAll=dt0*speedMul;
+  // 서브스텝: 스텝이 크면(배속·저프레임) 탄환이 명중 판정을 건너뛰므로 잘게 쪼갠다
+  const steps=Math.max(1,Math.ceil(dtAll/0.055)), sdt=dtAll/steps;
+  for(let s=0;s<steps;s++){ simStep(sdt); if(gameOver) break; }
 
+  updateHUD();
+  // 호스트: 8Hz로 상태 전송
+  if(netMode==='host' && ws && ws.readyState===1){
+    netSnapT-=dt0;
+    if(netSnapT<=0){ netSnapT=0.12; sendNet(makeSnap()); }
+  }
+  render();
+}
+function simStep(dt){
   // 웨이브 타이머
   if(!inWave){
     waveTimer-=dt;
@@ -937,7 +950,7 @@ function tick(ts){
   spawnQueue=spawnQueue.filter(s=>{ if(s.delay<=0){ spawnEnemy(s.type,s.sp); return false; } return true; });
   // 웨이브 종료
   if(inWave && spawnQueue.length===0 && enemies.length===0){
-    inWave=false; waveTimer=22;
+    inWave=false; waveTimer=18;
     copper+=15+wave*3;
     if(wave>=20){ endGame(true); }
     else { banner(`웨이브 ${wave} 클리어 +${15+wave*3}`); sfx('clear'); }
@@ -978,14 +991,6 @@ function tick(ts){
   updateBullets(dt);
   for(const p of parts){ p.t-=dt; if(p.vx!==undefined){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.92; p.vy*=0.92; } if(p.vr) p.rot+=p.vr*dt; }
   parts=parts.filter(p=>p.t>0);
-
-  updateHUD();
-  // 호스트: 8Hz로 상태 전송
-  if(netMode==='host' && ws && ws.readyState===1){
-    netSnapT-=dt0;
-    if(netSnapT<=0){ netSnapT=0.12; sendNet(makeSnap()); }
-  }
-  render();
 }
 function updateHUD(){
   document.getElementById('info').innerHTML=
@@ -1033,13 +1038,52 @@ function endGame(win){
   document.getElementById('overstat').innerHTML=`도달 웨이브 <b>${wave}</b> · 처치 <b>${kills}</b>`;
 }
 
-/* ══════════════ 렌더링 ══════════════ */
+/* ══════════════ 카메라 & 렌더링 ══════════════ */
+const cam={x:WVW/2,y:WVH/2,z:1}; // z=1이 전체 보기(핏), 최대 4배 줌
+let fitScale=1;
+function applyCam(){
+  scale=fitScale*cam.z;
+  const vw=cv.width/scale, vh=cv.height/scale;
+  cam.x = vw>=WVW ? WVW/2 : Math.max(vw/2,Math.min(WVW-vw/2,cam.x));
+  cam.y = vh>=WVH ? WVH/2 : Math.max(vh/2,Math.min(WVH-vh/2,cam.y));
+  offX=cv.width/2-cam.x*scale; offY=cv.height/2-cam.y*scale;
+}
 function resize(){
   cv.width=innerWidth; cv.height=innerHeight;
-  scale=Math.min(innerWidth/WVW, innerHeight/WVH);
-  offX=(innerWidth-WVW*scale)/2; offY=(innerHeight-WVH*scale)/2;
+  fitScale=Math.min(innerWidth/WVW, innerHeight/WVH);
+  applyCam();
 }
 addEventListener('resize',resize); resize();
+const keysHeld=new Set();
+addEventListener('keydown',ev=>keysHeld.add(ev.key.toLowerCase()));
+addEventListener('keyup',ev=>keysHeld.delete(ev.key.toLowerCase()));
+addEventListener('blur',()=>keysHeld.clear());
+function camPan(dt){
+  if(!started) return;
+  let dx=0,dy=0;
+  if(keysHeld.has('a')||keysHeld.has('arrowleft'))dx--;
+  if(keysHeld.has('d')||keysHeld.has('arrowright'))dx++;
+  if(keysHeld.has('w')||keysHeld.has('arrowup'))dy--;
+  if(keysHeld.has('s')||keysHeld.has('arrowdown'))dy++;
+  if(dx||dy){ cam.x+=dx*560*dt/cam.z; cam.y+=dy*560*dt/cam.z; applyCam(); }
+}
+cv.addEventListener('wheel',ev=>{
+  if(!started) return;
+  ev.preventDefault();
+  const w=toWorld(ev.clientX,ev.clientY);
+  cam.z=Math.max(1,Math.min(4,cam.z*Math.pow(1.0015,-ev.deltaY)));
+  applyCam();
+  const w2=toWorld(ev.clientX,ev.clientY); // 커서 아래 지점 고정
+  cam.x+=w.x-w2.x; cam.y+=w.y-w2.y; applyCam();
+},{passive:false});
+let panDrag=null;
+cv.addEventListener('mousedown',ev=>{
+  if(ev.button===1 && started){ ev.preventDefault(); panDrag={sx:ev.clientX,sy:ev.clientY,cx:cam.x,cy:cam.y}; }
+});
+addEventListener('mousemove',ev=>{
+  if(panDrag){ cam.x=panDrag.cx-(ev.clientX-panDrag.sx)/scale; cam.y=panDrag.cy-(ev.clientY-panDrag.sy)/scale; applyCam(); }
+});
+addEventListener('mouseup',ev=>{ if(ev.button===1) panDrag=null; });
 
 function render(){
   ctx.fillStyle='#0b0b10'; ctx.fillRect(0,0,cv.width,cv.height);

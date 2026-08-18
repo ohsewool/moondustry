@@ -43,11 +43,21 @@ place('drill',sx0-1,sy-1); place('generator',sx0,sy-1);
 place('spectre',sx0+1,sy-1); place('node',sx0+2,sy-1);
 const chainSpectre=map[sy-1][sx0+1].b; if(chainSpectre) chainSpectre.ammo=0;
 const chainSmelter=map[sy][sx0+1].b;
-// 전력 없는 제련소 대조군: 노드 커버 밖에 고립 설치
-const iy=core.y+6;
-if(map[iy] && map[iy][sx0]){ map[iy][sx0].rock=false; map[iy][sx0].b=null; map[iy][sx0].ore=null; computeFlow(); place('smelter',sx0,iy); }
-const lonelySmelter=map[iy] && map[iy][sx0] ? map[iy][sx0].b : null;
-if(lonelySmelter){ lonelySmelter.inC=3; lonelySmelter.inT=3; }
+// 전력 없는 제련소 대조군: 모든 노드 커버 밖에 고립 설치
+const iy=core.y+6, ix=sx0+9;
+if(map[iy] && map[iy][ix]){ map[iy][ix].rock=false; map[iy][ix].b=null; map[iy][ix].ore=null; computeFlow(); place('smelter',ix,iy); }
+const lonelySmelter=map[iy] && map[iy][ix] ? map[iy][ix].b : null;
+if(lonelySmelter){ lonelySmelter.inv={c:3,t:3}; }
+// ── 실리콘 사슬: 모래드릴+석탄드릴 → 실리콘로 → 듀오(유도탄 전환) ──
+const zy=core.y+9, zx0=core.x-6;
+for(let i=-1;i<4;i++){ const t=map[zy][zx0+i]; t.rock=false; t.b=null; t.ore=null; }
+for(let i=-1;i<4;i++){ const t=map[zy-1][zx0+i]; t.rock=false; t.b=null; t.ore=null; }
+map[zy][zx0].ore='s'; map[zy][zx0+2].ore='k'; map[zy-1][zx0-1].ore='k';
+computeFlow();
+place('drill',zx0,zy); place('siliconer',zx0+1,zy); place('drill',zx0+2,zy);
+place('drill',zx0-1,zy-1); place('generator',zx0,zy-1);
+place('duo',zx0+1,zy-1); place('node',zx0+2,zy-1);
+const siliconDuo=map[zy-1][zx0+1].b; if(siliconDuo) siliconDuo.ammo=0; // 구리탄 비우면 실리콘탄 수납
 let placedT=0;
 for(let r=2;r<=4;r++) for(let y=core.y-r;y<=core.y+1+r;y++) for(let x=core.x-r;x<=core.x+1+r;x++)
   if(placedT<10 && canPlace('duo',x,y)){ place('duo',x,y); map[y][x].b.ammo=1e9; placedT++; }
@@ -62,6 +72,7 @@ console.log(JSON.stringify({
   chainDuoAmmo: chainDuo?chainDuo.ammo:'배치 실패',
   chainSpectreAmmo: chainSpectre?chainSpectre.ammo:'배치 실패',
   poweredSmelterSat: chainSmelter?powerSat(chainSmelter):'배치 실패',
-  lonelySmelterIdle: lonelySmelter ? (lonelySmelter.out.length===0 && lonelySmelter.inC===3) : '배치 실패',
+  lonelySmelterIdle: lonelySmelter ? (lonelySmelter.out.length===0 && lonelySmelter.inv.c===3) : '배치 실패',
+  siliconDuo: siliconDuo ? {kind:siliconDuo.ammoKind, ammo:siliconDuo.ammo} : '배치 실패',
   copperEarned: Math.floor(copper), wave, kills, coreHp:Math.ceil(core.hp), gameOver
 }));

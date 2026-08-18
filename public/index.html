@@ -129,7 +129,8 @@
       <b>✚ 교차</b> 컨베이어를 가로질러 놓으면 <b>정션</b>(교차로)<br>
       <b>🔫 포탑</b> 탄약이 있어야 발사! 보급선을 지켜라<br>
       <b>🔥 제련소</b> 구리+<b>티타늄</b>(파란 광석) → <b>합금</b> — 고가 판매·스펙터 탄약<br>
-      <b>⚡ 전력</b> <b>석탄</b>(검은 광석)→발전기, <b>노드</b>로 송전 — 랜서·스펙터·제련소 필수<br>
+      <b>⚡ 전력</b> <b>석탄</b>(검은 광석)→발전기, <b>노드</b>로 송전 — 랜서·스펙터·제련·실리콘 필수<br>
+      <b>💠 탄약이 무기</b> 듀오에 <b>실리콘</b>(모래+석탄)=유도탄, <b>합금</b>=고위력탄<br>
       <b>🧱 벽</b> 적의 길을 막는다 — 막히면 적이 부수고 온다<br>
       <b>🎯 목표</b> 웨이브 20까지 코어 사수
     </div>
@@ -172,6 +173,7 @@ const DEFS = {
   scatter:  { name:'스캐터',   cost:95,  hp:190, range:145, reload:0.85, dmg:7, pellets:5, desc:'광역 산탄 포탑 — 무리에 강함, 탄약 필요' },
   lancer:   { name:'랜서',     cost:165, hp:210, range:170, reload:1.5, dmg:48, desc:'관통 레이저 포탑 — 탄약 필요' },
   smelter:  { name:'제련소',   cost:120, hp:160, desc:'구리+티타늄 → 합금 — 전력 2⚡ 필요' },
+  siliconer:{ name:'실리콘로', cost:150, hp:160, desc:'모래+석탄 → 실리콘 — 전력 2⚡ 필요. 듀오에 넣으면 유도탄!' },
   spectre:  { name:'스펙터',   cost:320, hp:260, range:150, reload:0.18, dmg:22, desc:'중화기 2연장 — 합금 탄약 + 전력 4⚡ 필요' },
   junction: { name:'정션',     cost:5,   hp:60,  desc:'컨베이어 교차로 — 벨트가 서로 통과 (컨베이어를 가로질러 놓으면 자동 생성)' },
   node:     { name:'노드',     cost:20,  hp:70,  range:108, desc:'전력망 — 노드끼리 연결되고 반경 내 건물에 급전' },
@@ -179,18 +181,29 @@ const DEFS = {
 };
 const ENAMES = { dagger:'대거', crawler:'크롤러', fortress:'포트리스', flier:'플라이어', boss:'⚠보스' };
 const TIP_DEFAULT = '클릭·드래그: 건설 · R: 회전 · 우클릭: 판매 · 1~0: 선택 · 휠: 줌 · WASD/휠클릭: 이동 · Space: 일시정지';
-const HOTBAR = ['drill','conveyor','router','duo','wall','mender','scatter','lancer','node','generator','smelter','spectre'];
+const HOTBAR = ['drill','conveyor','router','duo','wall','mender','scatter','lancer','node','generator','smelter','siliconer','spectre'];
 const TURRETS = new Set(['duo','scatter','lancer','spectre']);
 const DIRS = [{x:1,y:0},{x:0,y:1},{x:-1,y:0},{x:0,y:-1}];
-/* 아이템 종류: c=구리, t=티타늄, a=합금, k=석탄 */
-const ITEM_VALUE = { c:10, t:25, a:60, k:15 };   // 코어 납품 가격
-const AMMO_KIND = { duo:'c', scatter:'c', lancer:'c', mender:'c', spectre:'a' };
-const AMMO_PER = { c:6, t:0, a:10, k:0 };  // 아이템 1개당 탄약
-const KIND_COL = { c:['#d97e4a','#8a4a28'], t:['#9cc4e8','#4a6a8a'], a:['#ffd94f','#8a7420'], k:['#4d4d57','#1e1e24'] };
-const SMELT_TIME = 2.0;    // 합금 1개 제련 시간 (초)
+/* 아이템 종류: c=구리, t=티타늄, a=합금, k=석탄, s=모래, i=실리콘 */
+const ITEM_VALUE = { c:10, t:25, a:60, k:15, s:5, i:30 };   // 코어 납품 가격
+const AMMO_PER = { c:6, a:10, i:8 };       // 아이템 1개당 탄약
+/* 포탑별 사용 가능 탄약과 효과 — 탄약이 무기를 바꾼다 */
+const AMMO_TYPES = {
+  duo:     { c:{dmg:1},              i:{dmg:0.9, spd:300, homing:true, col:'#a8c4e8'}, a:{dmg:1.8, spd:400, col:'#ffd94f'} },
+  scatter: { c:{dmg:1},              a:{dmg:1.8, pellets:2, col:'#ffd94f'} },
+  lancer:  { c:{dmg:1} },
+  spectre: { a:{dmg:1} },
+  mender:  { c:{dmg:1} },
+};
+const KIND_COL = { c:['#d97e4a','#8a4a28'], t:['#9cc4e8','#4a6a8a'], a:['#ffd94f','#8a7420'], k:['#4d4d57','#1e1e24'], s:['#e0c890','#9a8a5a'], i:['#6a7686','#39404c'] };
+/* 조합기 레시피 */
+const RECIPES = {
+  smelter:   { ins:{c:1,t:1}, out:'a', time:2.0 },
+  siliconer: { ins:{s:1,k:1}, out:'i', time:1.5 },
+};
 const AMMO_MAX = 30;
 /* 전력 */
-const POWER_DRAW = { lancer:2, spectre:4, smelter:2 };  // 소비 ⚡/s
+const POWER_DRAW = { lancer:2, spectre:4, smelter:2, siliconer:2 };  // 소비 ⚡/s
 const GEN_OUT = 6;             // 발전기 출력 ⚡/s
 const GEN_FUEL_MAX = 6;        // 발전기 석탄 버퍼
 const COAL_BURN = 2.0;         // 석탄 1개 연소 시간 (초)
@@ -425,18 +438,27 @@ function genMap(){
     if(d>=6 && d<=13 && !map[y][x].rock){ if(orePatch(x,y,3,'k')>=2){ kOk=true; break; } }
   }
   if(!kOk){ const fx=ccx-8, fy=Math.max(3,ccy-6); carve(fx,fy,2); orePatch(fx,fy,3,'k'); }
+  // 시작용 모래: 코어에서 5~11칸 (실리콘 입문용)
+  let sOk=false; sGuard=0;
+  while(sGuard++<400){
+    const x=Math.floor(rnd(ccx-12,ccx-2)), y=Math.floor(rnd(2,MH-2));
+    const d=Math.hypot(x-(ccx+1),y-(ccy+1));
+    if(d>=5 && d<=11 && !map[y][x].rock){ if(orePatch(x,y,3,'s')>=2){ sOk=true; break; } }
+  }
+  if(!sOk){ const fx=ccx-5, fy=Math.max(3,ccy-7); carve(fx,fy,2); orePatch(fx,fy,3,'s'); }
   // 위험 광석: 병목 주변 구리+티타늄, 중간 지대 구리·티타늄 랜덤
   for(const spot of [c1,c2]){
     orePatch(spot.x+Math.floor(rnd(-3,4)), spot.y+Math.floor(rnd(-3,4)), 5);
     orePatch(spot.x+Math.floor(rnd(-3,4)), spot.y+Math.floor(rnd(-3,4)), 4, 't');
   }
-  let rPlaced=0, tPlaced=0, kPlaced=0; sGuard=0;
-  while((rPlaced<5 || tPlaced<3 || kPlaced<2) && sGuard++<2000){
+  let rPlaced=0, tPlaced=0, kPlaced=0, sPlaced=0; sGuard=0;
+  while((rPlaced<5 || tPlaced<3 || kPlaced<2 || sPlaced<3) && sGuard++<2600){
     const x=Math.floor(rnd(10,MW-14)), y=Math.floor(rnd(2,MH-2));
     if(map[y][x].rock) continue;
     if(spawns.some(s=>dist2(x,y,s.x,s.y)<64)) continue;
     if(tPlaced<3){ if(orePatch(x,y,4,'t')>=3) tPlaced++; }
     else if(kPlaced<2){ if(orePatch(x,y,4,'k')>=3) kPlaced++; }
+    else if(sPlaced<3){ if(orePatch(x,y,5,'s')>=3) sPlaced++; }
     else if(orePatch(x,y,5)>=3) rPlaced++;
   }
   // 스폰·코어 타일 정리
@@ -499,6 +521,18 @@ function renderFloor(){
         }
         c.fillStyle='#f2b382';
         c.beginPath(); c.moveTo(-5,-7.5); c.lineTo(-3.6,-5.2); c.lineTo(-6.4,-5.2); c.closePath(); c.fill();
+        c.restore();
+      } else if(t.ore==='s'){
+        // 모래: 밝은 알갱이 언덕
+        c.fillStyle='rgba(224,200,144,0.16)'; c.fillRect(px,py,TILE,TILE);
+        c.save(); c.translate(px+12,py+12);
+        c.fillStyle='#d8c08a';
+        c.beginPath(); c.arc(-3,2,5,0,7); c.fill();
+        c.beginPath(); c.arc(5,-2,3.6,0,7); c.fill();
+        c.fillStyle='#efe0b4';
+        c.fillRect(-5,-1,2,2); c.fillRect(4,-4,2,2); c.fillRect(1,5,2,2);
+        c.fillStyle='#b8a26a';
+        c.fillRect(-1,1,2,2); c.fillRect(7,0,2,2);
         c.restore();
       } else if(t.ore==='k'){
         // 석탄: 검은 덩어리
@@ -649,9 +683,9 @@ function place(type,x,y){
   if(type==='junction'){ b.jq=[null,null,null,null]; }
   if(type==='drill'){ b.buf=[]; b.outDir=0; b.oreKind=map[y][x].ore||'c'; }
   if(type==='router'){ b.buf=[]; b.outDir=0; }
-  if(type==='smelter'){ b.inC=0; b.inT=0; b.smeltT=0; b.out=[]; b.outDir=0; }
+  if(RECIPES[type]){ b.inv={}; b.craftT=0; b.out=[]; b.outDir=0; }
   if(type==='generator'){ b.fuel=0; b.burnT=0; }
-  if(TURRETS.has(type)||type==='mender') b.ammo=10; // 건설 시 기본 탄약 약간
+  if(TURRETS.has(type)||type==='mender'){ b.ammo=10; b.ammoKind=Object.keys(AMMO_TYPES[type])[0]; } // 건설 시 기본 탄약 약간
   builds.push(b); map[y][x].b=b;
   computeFlow();
   puff(x*TILE+12,y*TILE+12,TEAM,6);
@@ -810,18 +844,21 @@ function deliverTo(nb,nx,ny,kind,dir){
     if(nb.buf.length>=2) return false;
     nb.buf.push(kind); return true;
   }
-  if(nb.type==='smelter'){
-    if(kind==='c' && nb.inC<3){ nb.inC++; return true; }
-    if(kind==='t' && nb.inT<3){ nb.inT++; return true; }
-    return false;
+  if(RECIPES[nb.type]){
+    const rec=RECIPES[nb.type];
+    if(!(kind in rec.ins) || (nb.inv[kind]||0)>=3) return false;
+    nb.inv[kind]=(nb.inv[kind]||0)+1; return true;
   }
   if(nb.type==='generator'){
     if(kind!=='k' || nb.fuel>=GEN_FUEL_MAX) return false;
     nb.fuel++; return true;
   }
   if(TURRETS.has(nb.type)||nb.type==='mender'){
-    if(kind!==AMMO_KIND[nb.type]) return false; // 포탑별 탄약 종류 (스펙터=합금)
+    const types=AMMO_TYPES[nb.type];
+    if(!types || !types[kind]) return false;           // 이 포탑이 못 쓰는 탄약
+    if(nb.ammo>0 && nb.ammoKind!==kind) return false;  // 다른 탄약은 기존 탄약 소진 후에
     if(nb.ammo>=AMMO_MAX) return false;
+    nb.ammoKind=kind;
     nb.ammo=Math.min(AMMO_MAX,nb.ammo+AMMO_PER[kind]); return true;
   }
   if(nb===core){
@@ -861,14 +898,16 @@ function pushOutput(b,arr){
     if(t && t.b!==b && deliverTo(t.b,b.x+d.x,b.y+d.y,arr[0],k)){ arr.shift(); b.outDir=(k+1)%4; return; }
   }
 }
-function updateSmelter(b,dt){
+function updateCrafter(b,dt){
+  const rec=RECIPES[b.type];
   b.glow=Math.max(0,(b.glow||0)-dt*0.8);
   const pw=powerSat(b); // 전력 부족 → 그만큼 느리게
-  if(b.smeltT>0){
-    b.smeltT-=dt*pw;
-    if(b.smeltT<=0){ b.out.push('a'); b.glow=1; sfx('mend',0.6); }
-  } else if(b.inC>0 && b.inT>0 && b.out.length<2 && pw>0){
-    b.inC--; b.inT--; b.smeltT=SMELT_TIME;
+  if(b.craftT>0){
+    b.craftT-=dt*pw;
+    if(b.craftT<=0){ b.out.push(rec.out); b.glow=1; sfx('mend',0.6); }
+  } else if(b.out.length<2 && pw>0 && Object.entries(rec.ins).every(([k,n])=>(b.inv[k]||0)>=n)){
+    for(const [k,n] of Object.entries(rec.ins)) b.inv[k]-=n;
+    b.craftT=rec.time;
   }
   pushOutput(b,b.out);
 }
@@ -890,8 +929,9 @@ function updateMender(b,dt){
 /* ══════════════ 포탑 ══════════════ */
 function updateTurret(b,dt){
   const d=DEFS[b.type], tier=b.tier||1;
+  const mod=(AMMO_TYPES[b.type]||{})[b.ammoKind||'c']||{dmg:1}; // 장전된 탄약 종류의 효과
   // 티어 보정: 강화당 공격력 ×1.6, 사거리 +18, 연사 ×1.14
-  const tDmg=d.dmg*Math.pow(1.6,tier-1), tRange=d.range+18*(tier-1), tReload=d.reload*Math.pow(0.88,tier-1);
+  const tDmg=d.dmg*(mod.dmg||1)*Math.pow(1.6,tier-1), tRange=d.range+18*(tier-1), tReload=d.reload*Math.pow(0.88,tier-1);
   const bx=b.x*TILE+12, by=b.y*TILE+12;
   b.cd-=dt*(POWER_DRAW[b.type]?powerSat(b):1); // 전력 소비 포탑은 공급 비율만큼 연사
   // 타겟: 사거리 내 가장 가까운 적
@@ -912,16 +952,17 @@ function updateTurret(b,dt){
   sfx(b.type==='lancer'?'laser':(b.type==='scatter'?'scatter':'shoot'), (b.type==='spectre'?0.72:1)-(tier-1)*0.12);
   if(b.type==='duo'){
     b.alt=1-b.alt;
+    const spd=mod.spd||330;
     const px=bx+Math.cos(b.rot+Math.PI/2)*(b.alt?3.5:-3.5), py=by+Math.sin(b.rot+Math.PI/2)*(b.alt?3.5:-3.5);
-    bullets.push({ x:px,y:py, a:b.rot, spd:330, dmg:tDmg, life:tRange/330+0.1, c:'#ffe4a8', r:2.2+(tier-1)*0.7 });
+    bullets.push({ x:px,y:py, a:b.rot, spd, dmg:tDmg, life:tRange/spd+(mod.homing?0.45:0.1), c:mod.col||'#ffe4a8', r:2.2+(tier-1)*0.7, homing:mod.homing });
   } else if(b.type==='spectre'){
     b.alt=1-b.alt;
     const px=bx+Math.cos(b.rot+Math.PI/2)*(b.alt?4.5:-4.5), py=by+Math.sin(b.rot+Math.PI/2)*(b.alt?4.5:-4.5);
     bullets.push({ x:px,y:py, a:b.rot+rnd(-0.04,0.04), spd:390, dmg:tDmg, life:tRange/390+0.1, c:'#ffdf8a', r:2.8+(tier-1)*0.7 });
   } else if(b.type==='scatter'){
-    for(let i=0;i<d.pellets+(tier-1)*2;i++){
+    for(let i=0;i<d.pellets+(mod.pellets||0)+(tier-1)*2;i++){
       const a=b.rot+rnd(-0.28,0.28);
-      bullets.push({ x:bx,y:by, a, spd:rnd(270,340), dmg:tDmg, life:tRange/300+0.05, c:'#ffc890', r:1.8+(tier-1)*0.5 });
+      bullets.push({ x:bx,y:by, a, spd:rnd(270,340), dmg:tDmg, life:tRange/300+0.05, c:mod.col||'#ffc890', r:1.8+(tier-1)*0.5 });
     }
   } else if(b.type==='lancer'){
     // 관통 레이저: 즉발
@@ -979,6 +1020,15 @@ function updateBullets(dt){
       if(d<8){ b.dead=true; if(builds.includes(b.tb)) hitBuild(b.tb,b.dmg); continue; }
       b.x+=dx/d*b.spd*dt; b.y+=dy/d*b.spd*dt;
     } else {
+      if(b.homing){ // 실리콘 유도탄: 가까운 적에게 선회
+        let tgt=null, bd=110*110;
+        for(const e of enemies){ if(e.dead) continue; const dd=dist2(b.x,b.y,e.x,e.y); if(dd<bd){ bd=dd; tgt=e; } }
+        if(tgt){
+          const want=Math.atan2(tgt.y-b.y,tgt.x-b.x);
+          let diff=(want-b.a+Math.PI*3)%(Math.PI*2)-Math.PI;
+          b.a+=Math.max(-7*dt,Math.min(7*dt,diff));
+        }
+      }
       b.x+=Math.cos(b.a)*b.spd*dt; b.y+=Math.sin(b.a)*b.spd*dt;
       b.life-=dt;
       if(b.life<=0){ b.dead=true; continue; }
@@ -1070,7 +1120,7 @@ function simStep(dt){
     if(b.type==='junction') updateJunction(b,dt);
     if(b.type==='router') pushOutput(b);
     if(b.type==='mender') updateMender(b,dt);
-    if(b.type==='smelter') updateSmelter(b,dt);
+    if(RECIPES[b.type]) updateCrafter(b,dt);
     if(b.type==='drill'){
       if(b.buf.length<6){ b.mineT+=dt; if(b.mineT>=DEFS.drill.mine){ b.mineT=0; b.buf.push(b.oreKind); puff(b.x*TILE+12,b.y*TILE+12,b.oreKind==='t'?'#8fb8dd':'#c98a50',2); } }
       pushOutput(b);
@@ -1400,23 +1450,26 @@ function drawBuild(b){
       ctx.fillStyle=kc[0]; ctx.strokeStyle=kc[1]; ctx.lineWidth=1;
       ctx.fillRect(ix-3.2,iy-3.2,6.4,6.4); ctx.strokeRect(ix-3.2,iy-3.2,6.4,6.4);
     }
-  } else if(b.type==='smelter'){
-    ctx.fillStyle='#4a3a34'; ctx.fillRect(px+2,py+2,w-4,h-4);
-    ctx.strokeStyle='#6a5548'; ctx.lineWidth=1.5; ctx.strokeRect(px+3,py+3,w-6,h-6);
-    // 화구: 제련 중이면 이글거림
-    const hot=(b.smeltT||0)>0, flick=hot?0.75+0.25*Math.sin(performance.now()/70):0;
-    ctx.fillStyle = hot ? `rgba(255,${140+60*flick},60,${0.75+0.25*flick})` : 'rgba(40,28,24,1)';
+  } else if(RECIPES[b.type]){
+    const rec=RECIPES[b.type], sil=b.type==='siliconer';
+    ctx.fillStyle= sil?'#3c4046':'#4a3a34'; ctx.fillRect(px+2,py+2,w-4,h-4);
+    ctx.strokeStyle= sil?'#5a626e':'#6a5548'; ctx.lineWidth=1.5; ctx.strokeRect(px+3,py+3,w-6,h-6);
+    // 화구: 가동 중이면 이글거림
+    const hot=(b.craftT||0)>0, flick=hot?0.75+0.25*Math.sin(performance.now()/70):0;
+    ctx.fillStyle = hot ? (sil?`rgba(190,220,255,${0.65+0.3*flick})`:`rgba(255,${Math.floor(140+60*flick)},60,${0.75+0.25*flick})`) : 'rgba(30,26,26,1)';
     ctx.fillRect(cx-5,cy-4,10,8);
-    if((b.glow||0)>0){ // 합금 완성 섬광
+    if((b.glow||0)>0){ // 완성 섬광
       ctx.strokeStyle=`rgba(255,217,79,${b.glow*0.8})`; ctx.lineWidth=2;
       ctx.strokeRect(px+1,py+1,w-2,h-2);
     }
-    // 입력 게이지 (좌: 구리, 우: 티타늄)
-    ctx.fillStyle=KIND_COL.c[0];
-    for(let i=0;i<(b.inC||0);i++) ctx.fillRect(px+4,py+h-6-i*4,3,3);
-    ctx.fillStyle=KIND_COL.t[0];
-    for(let i=0;i<(b.inT||0);i++) ctx.fillRect(px+w-7,py+h-6-i*4,3,3);
-    if(b.out&&b.out.length){ ctx.fillStyle=KIND_COL.a[0]; ctx.fillRect(cx-2.5,py+3.5,5,3); }
+    // 입력 게이지 (재료별 좌/우)
+    const insKeys=Object.keys(rec.ins);
+    insKeys.forEach((k2,idx)=>{
+      ctx.fillStyle=KIND_COL[k2][0];
+      const gx = idx===0 ? px+4 : px+w-7;
+      for(let i=0;i<(b.inv&&b.inv[k2]||0);i++) ctx.fillRect(gx,py+h-6-i*4,3,3);
+    });
+    if(b.out&&b.out.length){ ctx.fillStyle=KIND_COL[rec.out][0]; ctx.fillRect(cx-2.5,py+3.5,5,3); }
   } else if(b.type==='node'){
     ctx.fillStyle='#3a3a44'; ctx.fillRect(px+5,py+5,w-10,h-10);
     const pulse=0.75+0.25*Math.sin(performance.now()/300+b.x);
@@ -1483,10 +1536,10 @@ function drawBuild(b){
     ctx.fillStyle=b.hp/b.maxhp>0.4?'#7ae06a':'#e84438';
     ctx.fillRect(px+2,py-5,(w-4)*Math.max(0,b.hp/b.maxhp),3);
   }
-  // 포탑 탄약바
+  // 포탑 탄약바 (색 = 장전된 탄약 종류)
   if(TURRETS.has(b.type)||b.type==='mender'){
     ctx.fillStyle='#111'; ctx.fillRect(px+2,py+h-4,w-4,2.5);
-    ctx.fillStyle=b.ammo>0?'#ffb46b':'#e84438';
+    ctx.fillStyle=b.ammo>0?(KIND_COL[b.ammoKind||'c']||KIND_COL.c)[0]:'#e84438';
     ctx.fillRect(px+2,py+h-4,(w-4)*Math.min(1,b.ammo/AMMO_MAX),2.5);
     if(b.ammo<=0 && Math.floor(performance.now()/400)%2){
       ctx.fillStyle='#ff5a48'; ctx.font='bold 11px sans-serif'; ctx.fillText('탄약!',px+1,py-1);
@@ -1688,6 +1741,11 @@ function drawBuildIcon(c,b){
     c.strokeStyle='#6a5548'; c.lineWidth=1.5; c.strokeRect(px+3,py+3,w-6,h-6);
     c.fillStyle='#ff9a3c'; c.fillRect(cx-5,cy-4,10,8);
     c.fillStyle='#ffd94f'; c.fillRect(cx-2.5,cy-2,5,4);
+  } else if(b.type==='siliconer'){
+    c.fillStyle='#3c4046'; c.fillRect(px+3,py+3,w-6,h-6);
+    c.strokeStyle='#5a626e'; c.lineWidth=1.5; c.strokeRect(px+3,py+3,w-6,h-6);
+    c.fillStyle='#bedcff'; c.fillRect(cx-5,cy-4,10,8);
+    c.fillStyle='#6a7686'; c.fillRect(cx-2.5,cy-2,5,4);
   } else if(b.type==='node'){
     c.fillStyle='#3a3a44'; c.fillRect(px+5,py+5,w-10,h-10);
     c.fillStyle='#ffd37f'; c.beginPath(); c.arc(cx,cy,4.5,0,7); c.fill();
@@ -1799,12 +1857,12 @@ function handleNet(m){
 }
 function makeInit(){
   return { t:'init',
-    tiles: map.map(row=>row.map(t=>t.rock?1:(t.ore==='c'?2:(t.ore==='t'?3:(t.ore==='k'?4:0))))),
+    tiles: map.map(row=>row.map(t=>t.rock?1:({c:2,t:3,k:4,s:5}[t.ore]||0))),
     shades: map.map(row=>row.map(t=>+t.shade.toFixed(2))),
     core:{x:core.x,y:core.y}, spawns };
 }
 function applyInit(m){
-  map=m.tiles.map((row,y)=>row.map((v,x)=>({rock:v===1, ore:v===2?'c':(v===3?'t':(v===4?'k':null)), b:null, shade:m.shades[y][x]})));
+  map=m.tiles.map((row,y)=>row.map((v,x)=>({rock:v===1, ore:{2:'c',3:'t',4:'k',5:'s'}[v]||null, b:null, shade:m.shades[y][x]})));
   spawns=m.spawns;
   core={type:'core',x:m.core.x,y:m.core.y,w:2,h:2,hp:2600,maxhp:2600,rot:0,cd:0};
   builds=[core]; enemies=[]; bullets=[]; parts=[];
@@ -1820,11 +1878,11 @@ function makeSnap(){
     ch:Math.ceil(core.hp), cr:+core.rot.toFixed(2), over: gameOver?(core.hp>0?2:1):0,
     b: builds.filter(b=>b!==core).map(b=>{
       let ex=0; // 타입별 추가 상태
-      if(b.type==='smelter') ex=[b.inC,b.inT,+(b.smeltT||0).toFixed(2),+powerSat(b).toFixed(2)];
+      if(RECIPES[b.type]) ex=[Object.entries(b.inv).map(([k,n])=>k.repeat(n)).join(''), +(b.craftT||0).toFixed(2), +powerSat(b).toFixed(2)];
       else if(b.type==='junction') ex=b.jq.map(s=>s?[+s.t.toFixed(2),s.k]:0);
       else if(b.type==='drill') ex=b.oreKind;
       else if(b.type==='generator') ex=[b.fuel,+(b.burnT||0).toFixed(2)];
-      else if(POWER_DRAW[b.type]) ex=+powerSat(b).toFixed(2);
+      else if(TURRETS.has(b.type)||b.type==='mender') ex=[+powerSat(b).toFixed(2), b.ammoKind||'c'];
       return [b.type,b.x,b.y,Math.ceil(b.hp),+(b.rot||0).toFixed(2),
         b.dir||0, b.ammo||0, (b.buf||b.out||[]).join(''), +(b.mineT||0).toFixed(2),
         (b.items||[]).map(i=>[+i.p.toFixed(2),i.k]), +(b.pulse||0).toFixed(2),
@@ -1848,11 +1906,14 @@ function applySnap(s){
     const buf=(a[7]||'').split('').filter(Boolean), ex=a[13];
     const b={type:a[0],x:a[1],y:a[2],w:1,h:1,hp:a[3],maxhp:a[11]||DEFS[a[0]].hp,rot:a[4],dir:a[5],
       ammo:a[6],buf,mineT:a[8],items:(a[9]||[]).map(q=>({p:q[0],k:q[1]})),pulse:a[10]||0,tier:a[12]||1,flash:0,alt:0,cd:0};
-    if(b.type==='smelter'){ b.inC=ex?ex[0]:0; b.inT=ex?ex[1]:0; b.smeltT=ex?ex[2]:0; b.pwSnap=ex?ex[3]:1; b.out=buf; b.glow=0; }
+    if(RECIPES[b.type]){
+      b.inv={}; for(const ch of (ex&&ex[0])||'') b.inv[ch]=(b.inv[ch]||0)+1;
+      b.craftT=ex?ex[1]:0; b.pwSnap=ex?ex[2]:1; b.out=buf; b.glow=0;
+    }
     if(b.type==='junction') b.jq=(ex||[0,0,0,0]).map(q=>q?{t:q[0],k:q[1]}:null);
     if(b.type==='drill') b.oreKind=ex||'c';
     if(b.type==='generator'){ b.fuel=ex?ex[0]:0; b.burnT=ex?ex[1]:0; }
-    if(POWER_DRAW[b.type]) b.pwSnap= typeof ex==='number'?ex:1;
+    if((TURRETS.has(b.type)||b.type==='mender') && Array.isArray(ex)){ b.pwSnap=ex[0]; b.ammoKind=ex[1]; }
     builds.push(b); if(inMap(b.x,b.y)) map[b.y][b.x].b=b;
   }
   if(builds.length!==netLastBuilds){ computeFlow(); netLastBuilds=builds.length; }

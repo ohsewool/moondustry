@@ -56,7 +56,7 @@ map[zy][zx0].ore='s'; map[zy][zx0+2].ore='k'; map[zy-1][zx0-1].ore='k';
 computeFlow();
 place('drill',zx0,zy); place('siliconer',zx0+1,zy); place('drill',zx0+2,zy);
 place('drill',zx0-1,zy-1); place('generator',zx0,zy-1);
-place('duo',zx0+1,zy-1); place('node',zx0+2,zy-1);
+place('duo',zx0+1,zy-1); // 노드 없음 — 발전기 자가 급전(2.5칸)만으로 실리콘로가 돌아야 함
 const siliconDuo=map[zy-1][zx0+1].b; if(siliconDuo) siliconDuo.ammo=0; // 구리탄 비우면 실리콘탄 수납
 let placedT=0;
 for(let r=2;r<=4;r++) for(let y=core.y-r;y<=core.y+1+r;y++) for(let x=core.x-r;x<=core.x+1+r;x++)

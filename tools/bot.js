@@ -19,10 +19,11 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
     paths: paths.map(p => p.map(q => ({ x: Math.floor(q.x / 24), y: Math.floor(q.y / 24) }))),
   }));
   const getMap = () => page.evaluate(() =>
-    map.map(row => row.map(t => ({ r: t.rock ? 1 : 0, o: t.ore === 'c' ? 1 : (t.ore ? 2 : 0), b: t.b ? t.b.type : null }))));
-  // o: 0=없음 1=구리 2=티타늄 — 봇은 구리(1)만 드릴 대상으로 사용 (티타늄 탄약은 포탑에 안 들어감)
+    map.map(row => row.map(t => ({ r: t.rock ? 1 : 0, o: { c: 1, t: 2, k: 3, s: 4 }[t.ore] || 0, b: t.b ? t.b.type : null }))));
+  // o: 0=없음 1=구리 2=티타늄 3=석탄 4=모래
   const getState = () => page.evaluate(() => ({
     copper: Math.floor(copper), wave, inWave, coreHp: Math.ceil(core.hp), gameOver,
+    pow: [powSupply, powDemand], endless,
     enemies: enemies.length,
     epos: enemies.slice(0, 10).map(e => ({ x: Math.floor(e.x / 24), y: Math.floor(e.y / 24) })),
     builds: builds.filter(b => b.type !== 'core').map(b => ({ t: b.type, x: b.x, y: b.y, ammo: b.ammo })),
@@ -207,6 +208,69 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
     return true;
   }
 
+  /* ── 공장 경제: 전력 기지 → 제련 사슬(티탄드릴+제련소+스펙터) ── */
+  let factoryChains = 0;
+  const freeAt = (m, x, y) => inB(x, y) && !m[y][x].r && !m[y][x].b && !m[y][x].o && !nearSpawn(x, y);
+  const markB = (m, p, t) => { if (p) m[p.y][p.x].b = t; };
+  function nearestOre(m, kind, tx, ty) {
+    let best = null, bd = 1e9;
+    for (let y = 0; y < world.MH; y++) for (let x = 0; x < world.MW; x++) {
+      const t = m[y][x];
+      if (t.o !== kind || t.b || t.r || nearSpawn(x, y)) continue;
+      const d = (x - tx) ** 2 + (y - ty) ** 2;
+      if (d < bd) { bd = d; best = { x, y }; }
+    }
+    return best;
+  }
+  async function placeAdj(m, cx2, cy2, type) {
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cx2 + dx, ny = cy2 + dy;
+      if (freeAt(m, nx, ny) && await placeAt(type, nx, ny)) { markB(m, { x: nx, y: ny }, type); return { x: nx, y: ny }; }
+    }
+    return null;
+  }
+  // 자원 급이 벨트: ore 드릴 → 벨트 → target 인접까지
+  async function feedBelt(m, oreKind, target) {
+    const ore = nearestOre(m, oreKind, target.x, target.y);
+    if (!ore) return false;
+    const isGoal = (x, y) => Math.abs(x - target.x) + Math.abs(y - target.y) === 1;
+    const route = ore.x === target.x && ore.y === target.y ? null : beltRoute(m, ore, isGoal);
+    if (Math.abs(ore.x - target.x) + Math.abs(ore.y - target.y) !== 1 && !route) return false;
+    if (!await placeAt('drill', ore.x, ore.y)) return false;
+    markB(m, ore, 'drill');
+    if (route) for (let i = 1; i < route.length; i++) {
+      const next = i + 1 < route.length ? route[i + 1] : target;
+      if (await placeAt('conveyor', route[i].x, route[i].y, dirTo(route[i], next))) markB(m, route[i], 'conveyor');
+    }
+    return true;
+  }
+  // 콤팩트 자가 급전 공장: 티탄드릴+제련소+스펙터+발전기(자가 반경) + 석탄·구리 벨트 + 호위
+  async function buildSmelterChain(m) {
+    const tOre = nearestOre(m, 2, world.core.x, world.core.y);
+    if (!tOre) return false;
+    if (!await placeAt('drill', tOre.x, tOre.y)) return false;
+    markB(m, tOre, 'drill');
+    const sm = await placeAdj(m, tOre.x, tOre.y, 'smelter');
+    if (!sm) return false;
+    const sp = await placeAdj(m, sm.x, sm.y, 'spectre');
+    const gen = await placeAdj(m, sm.x, sm.y, 'generator') || (sp && await placeAdj(m, sp.x, sp.y, 'generator'));
+    if (gen) await feedBelt(m, 3, gen);           // 석탄 → 발전기
+    await feedBelt(m, 1, sm);                     // 구리 → 제련소
+    // 호위: 스캐터 1 + 벽
+    await placeAdj(m, sp ? sp.x : sm.x, sp ? sp.y : sm.y, 'scatter');
+    let fwalls = 0;
+    for (const c of [tOre, sm, sp].filter(Boolean)) {
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        if (fwalls >= 4) break;
+        const nx = c.x + dx, ny = c.y + dy;
+        if (freeAt(m, nx, ny) && await placeAt('wall', nx, ny)) { markB(m, { x: nx, y: ny }, 'wall'); fwalls++; }
+      }
+    }
+    factoryChains++;
+    log.push(`[공장] 자가발전 제련 사슬 #${factoryChains}: 티탄드릴(${tOre.x},${tOre.y}) → 제련소 → ${sp ? '스펙터' : '(스펙터 실패)'} · 발전기 ${gen ? 'OK' : '실패'}`);
+    return true;
+  }
+
   let menders = 0;
   async function buildMender(m, st) {
     const drills = st.builds.filter(b => b.t === 'drill');
@@ -229,16 +293,23 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
   await page.evaluate(() => { speedMul = 4; });
 
   // ── 메인 플레이 루프 ──
-  const t0 = Date.now();
+  const t0 = Date.now(), LIMIT = +process.env.BOT_MS || 480000;
   let lastWave = 0, emerSpent = 0, lastCoreHp = 2600, reinforced = 0;
-  while (Date.now() - t0 < 480000) {
+  while (Date.now() - t0 < LIMIT) {
     const st = await getState();
-    if (st.gameOver) break;
+    if (st.gameOver) {
+      if (st.coreHp > 0 && !st.endless) { // 웨이브 20 승리 → 무한 모드 진입
+        await page.evaluate(() => document.getElementById('contbtn').onclick());
+        log.push('═══ 웨이브 20 클리어 → ∞ 무한 모드 진입');
+        continue;
+      }
+      break;
+    }
     if (st.wave !== lastWave) {
-      log.push(`── 웨이브 ${st.wave} 시작 · 코어 ${st.coreHp} · 자금 ${st.copper} · 포탑 ${st.builds.filter(b => ['duo', 'scatter', 'lancer'].includes(b.t)).length} · 경제 ${econChains}`);
+      log.push(`── 웨이브 ${st.wave} 시작 · 코어 ${st.coreHp} · 자금 ${st.copper} · ⚡${st.pow[0]}/${st.pow[1]} · 공장 ${factoryChains} · 경제 ${econChains}`);
       lastWave = st.wave; emerSpent = 0; reinforced = 0;
     }
-    for (const w of [1, 5, 10, 15, 20]) {
+    for (const w of [1, 5, 10, 15, 20, 25, 30, 35]) {
       if (st.wave >= w && !screenshots.has(w)) {
         screenshots.add(w);
         await page.screenshot({ path: SHOT(`wave${w}`) });
@@ -278,9 +349,22 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
     if (econChains < 2 && st.copper > 115 && await buildEcon(m)) continue;
     if (clusters < 2 && st.copper > 140 && await buildCluster(m, 'duo', true)) continue;
     if (econChains < 3 && st.copper > 150 && await buildEcon(m)) continue;
-    const targetClusters = Math.min(7, 2 + Math.floor(st.wave / 3) + 1);
+    const targetClusters = Math.min(12, 2 + Math.floor(st.wave / 3) + 1);
     if (clusters < targetClusters && st.copper > 180 &&
         await buildCluster(m, st.copper > 300 && clusters >= 3 ? 'scatter' : 'duo', clusters < 3)) continue;
+    // ── 공장 경제 (방어 기반이 잡히면 최우선 투자, 파괴되면 재건) ──
+    const aliveGens = st.builds.filter(b => b.t === 'generator').length;
+    const aliveSmelters = st.builds.filter(b => b.t === 'smelter').length;
+    if (aliveGens < aliveSmelters && st.copper > 220) { // 발전기만 죽은 사슬 복구
+      let did = false;
+      for (const s of st.builds.filter(b => b.t === 'smelter')) {
+        const g = await placeAdj(m, s.x, s.y, 'generator');
+        if (g) { log.push(`[전력] 발전기 재건 (${g.x},${g.y})`); did = true; break; }
+      }
+      if (did) continue;
+    }
+    if (aliveSmelters < 1 && st.wave >= 5 && st.copper > 650 && await buildSmelterChain(m)) continue;
+    if (aliveSmelters < 3 && st.wave >= 12 && st.copper > 950 && await buildSmelterChain(m)) continue;
     // 여유 자금 → 포탑 강화 (뽕맛 검증)
     if (st.copper > 450) {
       const upped = await page.evaluate(() => {

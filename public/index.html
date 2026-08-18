@@ -179,7 +179,7 @@ const DEFS = {
   spectre:  { name:'스펙터',   cost:320, hp:260, range:150, reload:0.18, dmg:22, desc:'중화기 2연장 — 합금 탄약 + 전력 4⚡ 필요' },
   junction: { name:'정션',     cost:5,   hp:60,  desc:'컨베이어 교차로 — 벨트가 서로 통과 (컨베이어를 가로질러 놓으면 자동 생성)' },
   node:     { name:'노드',     cost:20,  hp:70,  range:108, desc:'전력망 — 노드끼리 연결되고 반경 내 건물에 급전' },
-  generator:{ name:'발전기',   cost:80,  hp:150, desc:'석탄(검은 광석)을 태워 6⚡ 생산 — 노드 반경 안에 지을 것' },
+  generator:{ name:'발전기',   cost:80,  hp:150, range:60, desc:'석탄을 태워 6⚡ 생산 — 반경 2.5칸 자가 급전, 멀리는 노드로 송전' },
 };
 const ENAMES = { dagger:'대거', crawler:'크롤러', fortress:'포트리스', flier:'플라이어', boss:'⚠보스' };
 const TIP_DEFAULT = '클릭·드래그: 건설 · R: 회전 · 우클릭: 판매 · 1~0: 선택 · 휠: 줌 · WASD/휠클릭: 이동 · Space: 일시정지';
@@ -208,9 +208,10 @@ const AMMO_MAX = 30;
 const POWER_DRAW = { lancer:2, spectre:4, smelter:2, siliconer:2 };  // 소비 ⚡/s
 const GEN_OUT = 6;             // 발전기 출력 ⚡/s
 const GEN_FUEL_MAX = 6;        // 발전기 석탄 버퍼
-const COAL_BURN = 2.0;         // 석탄 1개 연소 시간 (초)
+const COAL_BURN = 3.0;         // 석탄 1개 연소 시간 (초) — 드릴 1개(1.5초/개)가 발전기 2대 부양
 const NODE_LINK = 7*TILE;      // 노드-노드 연결 거리
 const NODE_COVER = 4.5*TILE;   // 노드 급전 반경 (DEFS.node.range와 일치)
+const GEN_COVER = 2.5*TILE;    // 발전기 자가 급전 반경 — 소형 공장은 노드 없이 동작
 const BELT_SPD = 2.4;      // 타일/초
 const SPAWN_SAFE = 5.5;    // 스폰 주변 건설 금지 반경 (타일)
 
@@ -450,7 +451,7 @@ function genMap(){
   while(sGuard++<400){
     const x=Math.floor(rnd(ccx-14,ccx-3)), y=Math.floor(rnd(2,MH-2));
     const d=Math.hypot(x-(ccx+1),y-(ccy+1));
-    if(d>=6 && d<=13 && !map[y][x].rock){ if(orePatch(x,y,3,'k')>=2){ kOk=true; break; } }
+    if(d>=6 && d<=13 && !map[y][x].rock){ carve(x,y,2); if(orePatch(x,y,3,'k')>=2){ kOk=true; break; } }
   }
   if(!kOk){ const fx=ccx-8, fy=Math.max(3,ccy-6); carve(fx,fy,2); orePatch(fx,fy,3,'k'); }
   // 시작용 모래: 코어에서 5~11칸 (실리콘 입문용)
@@ -458,9 +459,17 @@ function genMap(){
   while(sGuard++<400){
     const x=Math.floor(rnd(ccx-12,ccx-2)), y=Math.floor(rnd(2,MH-2));
     const d=Math.hypot(x-(ccx+1),y-(ccy+1));
-    if(d>=5 && d<=11 && !map[y][x].rock){ if(orePatch(x,y,3,'s')>=2){ sOk=true; break; } }
+    if(d>=5 && d<=11 && !map[y][x].rock){ carve(x,y,2); if(orePatch(x,y,3,'s')>=2){ sOk=true; break; } }
   }
   if(!sOk){ const fx=ccx-5, fy=Math.max(3,ccy-7); carve(fx,fy,2); orePatch(fx,fy,3,'s'); }
+  // 시작용 티타늄: 코어에서 6~12칸 소량 (합금 사슬 입문용 — 대형 광맥은 여전히 위험 지대)
+  let tOk=false; sGuard=0;
+  while(sGuard++<400){
+    const x=Math.floor(rnd(ccx-13,ccx-3)), y=Math.floor(rnd(2,MH-2));
+    const d=Math.hypot(x-(ccx+1),y-(ccy+1));
+    if(d>=6 && d<=12 && !map[y][x].rock){ carve(x,y,2); if(orePatch(x,y,3,'t')>=2){ tOk=true; break; } }
+  }
+  if(!tOk){ const fx=ccx-9, fy=Math.min(MH-3,ccy+7); carve(fx,fy,2); orePatch(fx,fy,3,'t'); }
   // 위험 광석: 병목 주변 구리+티타늄, 중간 지대 구리·티타늄 랜덤
   for(const spot of [c1,c2]){
     orePatch(spot.x+Math.floor(rnd(-3,4)), spot.y+Math.floor(rnd(-3,4)), 5);
@@ -577,7 +586,7 @@ function renderFloor(){
 }
 
 /* ══════════════ 전력망 ══════════════ */
-let pnets=[], powSupply=0, powDemand=0;
+let pnets=[], powSupply=0, powDemand=0, powOrphan=0;
 const bcx=b=>(b.x+b.w/2)*TILE, bcy=b=>(b.y+b.h/2)*TILE;
 function computePower(){
   pnets=[];
@@ -600,13 +609,23 @@ function computePower(){
     }
     pnets.push(net);
   }
-  // 발전기·소비자를 커버 반경 내 노드의 망에 연결
+  // 발전기: 노드 커버면 그 망에, 아니면 자가 급전망(반경 GEN_COVER)
+  const gens=builds.filter(b=>b.type==='generator');
+  for(const g of gens){
+    g.pnet=null;
+    for(const net of pnets){
+      if(net.nodes.some(n=>dist2(bcx(g),bcy(g),bcx(n),bcy(n))<=NODE_COVER*NODE_COVER)){ g.pnet=net; net.gens.push(g); break; }
+    }
+    if(!g.pnet){ const net={nodes:[],links:[],gens:[g],cons:[],sat:1}; g.pnet=net; pnets.push(net); }
+  }
+  // 소비자: 노드 커버 또는 발전기 자가 반경
   for(const b of builds){
-    if(b.type!=='generator' && !POWER_DRAW[b.type]) continue;
+    if(!POWER_DRAW[b.type]) continue;
     b.pnet=null;
     for(const net of pnets){
-      if(net.nodes.some(n=>dist2(bcx(b),bcy(b),bcx(n),bcy(n))<=NODE_COVER*NODE_COVER)){
-        b.pnet=net; (b.type==='generator'?net.gens:net.cons).push(b); break;
+      if(net.nodes.some(n=>dist2(bcx(b),bcy(b),bcx(n),bcy(n))<=NODE_COVER*NODE_COVER) ||
+         net.gens.some(g=>dist2(bcx(b),bcy(b),bcx(g),bcy(g))<=GEN_COVER*GEN_COVER)){
+        b.pnet=net; net.cons.push(b); break;
       }
     }
   }
@@ -623,6 +642,8 @@ function updatePower(dt){
       else if(g.fuel>0){ g.fuel--; g.burnT=COAL_BURN; }
     }
   }
+  powOrphan=0; // 어떤 망에도 안 붙은 소비 건물 (진단용)
+  for(const b of builds) if(POWER_DRAW[b.type] && !b.pnet) powOrphan+=POWER_DRAW[b.type];
 }
 const powerSat=b=> netMode==='guest' ? (b.pwSnap!==undefined?b.pwSnap:1) : (b.pnet?b.pnet.sat:0);
 
@@ -1007,7 +1028,7 @@ function damage(e,dmg){
   e.hp-=dmg; e.flash=1;
   if(e.hp<=0 && !e.dead){
     e.dead=true; kills++;
-    copper+=e.reward;
+    copper+=Math.ceil(e.reward*(1+0.25*Math.max(0,wave-20))); // 무한 구간: 보상도 스케일
     const nShard = e.boss ? 14 : 5;
     for(let i=0;i<nShard;i++){ // 파편으로 산산조각
       const a=rnd(0,Math.PI*2), s=rnd(30,e.boss?160:95);
@@ -1104,10 +1125,11 @@ function simStep(dt){
   // 웨이브 종료
   if(inWave && spawnQueue.length===0 && enemies.length===0){
     inWave=false; waveTimer=18;
-    copper+=15+wave*3;
+    const bonus=Math.ceil((15+wave*3)*(1+0.25*Math.max(0,wave-20)));
+    copper+=bonus;
     saveBest();
     if(wave>=20 && !endless){ endGame(true); }
-    else { banner(`웨이브 ${wave} 클리어 +${15+wave*3}`); sfx('clear'); }
+    else { banner(`웨이브 ${wave} 클리어 +${bonus}`); sfx('clear'); }
   }
 
   updatePower(dt);
@@ -1148,7 +1170,10 @@ function simStep(dt){
   parts=parts.filter(p=>p.t>0);
 }
 function updateHUD(){
-  const powTxt = powDemand>0||powSupply>0 ? `\n<span style="color:${powSupply>=powDemand?'#ffe36b':'#ff7a5a'}">⚡ 전력 ${powSupply}/${powDemand}</span>` : '';
+  const powTxt = powDemand>0||powSupply>0||powOrphan>0
+    ? `\n<span style="color:${powSupply>=powDemand?'#ffe36b':'#ff7a5a'}">⚡ 전력 ${powSupply}/${powDemand}</span>`+
+      (powOrphan>0?`<span style="color:#ff7a5a"> ⚠미연결 ${powOrphan}</span>`:'')
+    : '';
   document.getElementById('info').innerHTML=
     `<span class="cu">⛏ 구리 ${Math.floor(copper)}</span>\n`+
     `🏰 코어 ${Math.max(0,Math.ceil(core.hp))} / ${core.maxhp}\n`+
@@ -1904,7 +1929,7 @@ function applyInit(m){
   started=true;
 }
 function makeSnap(){
-  return { t:'snap', c:Math.floor(copper), w:wave, iw:inWave, wt:Math.max(0,Math.ceil(waveTimer)), k:kills, pw:[powSupply,powDemand],
+  return { t:'snap', c:Math.floor(copper), w:wave, iw:inWave, wt:Math.max(0,Math.ceil(waveTimer)), k:kills, pw:[powSupply,powDemand,powOrphan],
     ch:Math.ceil(core.hp), cr:+core.rot.toFixed(2), over: gameOver?(core.hp>0?2:1):0,
     b: builds.filter(b=>b!==core).map(b=>{
       let ex=0; // 타입별 추가 상태
@@ -1924,7 +1949,7 @@ function makeSnap(){
 }
 function applySnap(s){
   copper=s.c; wave=s.w; inWave=s.iw; waveTimer=s.wt; kills=s.k;
-  if(s.pw){ powSupply=s.pw[0]; powDemand=s.pw[1]; }
+  if(s.pw){ powSupply=s.pw[0]; powDemand=s.pw[1]; powOrphan=s.pw[2]||0; }
   core.hp=s.ch; core.rot=s.cr;
   document.getElementById('wvnum').textContent=wave;
   document.getElementById('wvtimer').textContent = inWave ? `적 ${s.e.length}기 남음` : `다음 웨이브까지 ${s.wt}초`;

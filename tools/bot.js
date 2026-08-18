@@ -19,7 +19,8 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
     paths: paths.map(p => p.map(q => ({ x: Math.floor(q.x / 24), y: Math.floor(q.y / 24) }))),
   }));
   const getMap = () => page.evaluate(() =>
-    map.map(row => row.map(t => ({ r: t.rock ? 1 : 0, o: t.ore ? 1 : 0, b: t.b ? t.b.type : null }))));
+    map.map(row => row.map(t => ({ r: t.rock ? 1 : 0, o: t.ore === 'c' ? 1 : (t.ore ? 2 : 0), b: t.b ? t.b.type : null }))));
+  // o: 0=없음 1=구리 2=티타늄 — 봇은 구리(1)만 드릴 대상으로 사용 (티타늄 탄약은 포탑에 안 들어감)
   const getState = () => page.evaluate(() => ({
     copper: Math.floor(copper), wave, inWave, coreHp: Math.ceil(core.hp), gameOver,
     enemies: enemies.length,
@@ -107,7 +108,7 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
     let best = null, bd = 1e9;
     for (let y = 0; y < world.MH; y++) for (let x = 0; x < world.MW; x++) {
       const t = m[y][x];
-      if (!t.o || t.b || t.r || nearSpawn(x, y)) continue;
+      if (t.o !== 1 || t.b || t.r || nearSpawn(x, y)) continue;
       const d = (x - world.core.x) ** 2 + (y - world.core.y) ** 2;
       if (d < bd) { bd = d; best = { x, y }; }
     }
@@ -132,7 +133,7 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
     let best = null, bestScore = -Infinity;
     for (let y = 0; y < world.MH; y++) for (let x = 0; x < world.MW; x++) {
       const t = m[y][x];
-      if (!t.o || t.b || t.r || nearSpawn(x, y)) continue;
+      if (t.o !== 1 || t.b || t.r || nearSpawn(x, y)) continue;
       if (!coreGuard && !nearPath(x, y, 3)) continue;
       let free = 0;
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]])
@@ -170,7 +171,7 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       if (extraDrill) break;
       const nx = best.x + dx, ny = best.y + dy;
-      if (inB(nx, ny) && m[ny][nx].o && !m[ny][nx].b && !m[ny][nx].r)
+      if (inB(nx, ny) && m[ny][nx].o === 1 && !m[ny][nx].b && !m[ny][nx].r)
         if (await placeAt('drill', nx, ny)) extraDrill++;
     }
     clusters++;
@@ -188,7 +189,7 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
     let ore = null, bd = 1e9;
     for (let y = 0; y < world.MH; y++) for (let x = 0; x < world.MW; x++) {
       const t = m[y][x];
-      if (!t.o || t.b || t.r || nearSpawn(x, y)) continue;
+      if (t.o !== 1 || t.b || t.r || nearSpawn(x, y)) continue;
       const d = (x - spot.x) ** 2 + (y - spot.y) ** 2;
       if (d < bd) { bd = d; ore = { x, y }; }
     }

@@ -123,6 +123,7 @@
   <div class="panel">
     <h1>MOONDUSTRY</h1>
     <div class="sub">문더스트리 — 자원을 캐고, 포탑을 짓고, 코어를 지켜라</div>
+    <div id="bestline" style="display:none;margin:-14px 0 18px;font-size:0.85rem;color:#8fe07a"></div>
     <div class="ctrl-list">
       <b>⛏️ 드릴</b> 광석 위에 설치 — 캔 자원은 운반해야 함<br>
       <b>📦 컨베이어</b> 자원을 <b>코어</b>로 → 돈 / <b>포탑</b>으로 → 탄약<br>
@@ -132,7 +133,7 @@
       <b>⚡ 전력</b> <b>석탄</b>(검은 광석)→발전기, <b>노드</b>로 송전 — 랜서·스펙터·제련·실리콘 필수<br>
       <b>💠 탄약이 무기</b> 듀오에 <b>실리콘</b>(모래+석탄)=유도탄, <b>합금</b>=고위력탄<br>
       <b>🧱 벽</b> 적의 길을 막는다 — 막히면 적이 부수고 온다<br>
-      <b>🎯 목표</b> 웨이브 20까지 코어 사수
+      <b>🎯 목표</b> 웨이브 20 클리어 — 그 뒤엔 <b>∞ 무한 모드</b>로 기록 도전
     </div>
     <button class="bigbtn" id="startbtn">출 격</button>
     <button id="coopbtn" style="margin-top:12px;width:100%;padding:11px;border:1px solid #3a4a3a;border-radius:10px;background:transparent;color:#9ab89a;font-size:0.9rem;cursor:pointer;letter-spacing:1px">🤝 협동 방 만들기</button>
@@ -146,6 +147,7 @@
     <h1 id="overttl">코어 파괴됨</h1>
     <div class="sub" id="oversub">THE CORE HAS FALLEN</div>
     <div class="stat-line" id="overstat"></div>
+    <button class="bigbtn" id="contbtn" style="display:none;background:#8fe07a">∞ 무한 모드 계속</button>
     <button class="bigbtn" onclick="location.reload()">다시 시작</button>
   </div>
 </div>
@@ -333,13 +335,26 @@ let core = null;
 let copper = 220, wave = 0, waveTimer = 38, inWave = false, spawnQueue = [];
 let selected = null;     // 선택한 건설 타입
 let ghostRot = 0;        // 컨베이어 설치 방향 (0우 1하 2좌 3상)
-let speedMul = 1, paused = false, gameOver = false, kills = 0;
+let speedMul = 1, paused = false, gameOver = false, kills = 0, endless = false;
 let combo = 0, comboT = 0;
 let mouse = { x:0, y:0, tx:-1, ty:-1, in:false };
 let spawns = [];         // 스폰 지점 타일 좌표
 
 /* ══════════════ 유틸 ══════════════ */
 const rnd = (a,b) => a + Math.random()*(b-a);
+/* 최고 기록 (localStorage) */
+function loadBest(){
+  try{ if(typeof localStorage==='undefined') return null;
+    return JSON.parse(localStorage.getItem('moondustry_best')||'null');
+  }catch(e){ return null; }
+}
+function saveBest(){
+  try{ if(typeof localStorage==='undefined') return;
+    const b=loadBest();
+    if(!b || wave>b.wave || (wave===b.wave && kills>b.kills))
+      localStorage.setItem('moondustry_best', JSON.stringify({wave, kills, date:new Date().toISOString().slice(0,10)}));
+  }catch(e){}
+}
 const dist2 = (ax,ay,bx,by) => (ax-bx)**2 + (ay-by)**2;
 const inMap = (x,y) => x>=0 && y>=0 && x<MW && y<MH;
 const tileAt = (x,y) => inMap(x,y) ? map[y][x] : null;
@@ -709,6 +724,7 @@ function waveComp(n){
   if(n>=5) add('flier', Math.floor((n-3)*0.8));
   if(n>=7) add('fortress', Math.floor((n-5)*0.5));
   if(n>=5 && n%5===0) add('boss', Math.max(1,Math.floor(n/10))); // 5웨이브마다 보스
+  if(list.length>120) list.length=120; // 성능 상한
   return list;
 }
 function startWave(){
@@ -721,7 +737,7 @@ function startWave(){
 }
 function spawnEnemy(type, sp){
   const d=EDEFS[type];
-  const hpMul = 1+ (wave-1)*0.13;
+  const hpMul = (1+(wave-1)*0.13) * Math.pow(1.06, Math.max(0, wave-20)); // 무한 구간은 지수 스케일
   enemies.push({
     type, ...structuredClone(d),
     hp:d.hp*hpMul, maxhp:d.hp*hpMul,
@@ -1089,7 +1105,8 @@ function simStep(dt){
   if(inWave && spawnQueue.length===0 && enemies.length===0){
     inWave=false; waveTimer=18;
     copper+=15+wave*3;
-    if(wave>=20){ endGame(true); }
+    saveBest();
+    if(wave>=20 && !endless){ endGame(true); }
     else { banner(`웨이브 ${wave} 클리어 +${15+wave*3}`); sfx('clear'); }
   }
 
@@ -1169,13 +1186,26 @@ function updateHUD(){
 function endGame(win){
   gameOver=true;
   sfx(win?'win':'lose');
+  const prev=loadBest();
+  const isNew=!prev || wave>prev.wave || (wave===prev.wave && kills>prev.kills);
+  saveBest();
+  const best=loadBest();
   if(netMode==='host') sendNet(makeSnap());
   document.getElementById('over').style.display='flex';
   document.getElementById('overttl').textContent = win?'승리!':'코어 파괴됨';
   document.getElementById('overttl').style.color = win?'#ffd37f':'#e84438';
   document.getElementById('oversub').textContent = win?'ALL WAVES CLEARED':'THE CORE HAS FALLEN';
-  document.getElementById('overstat').innerHTML=`도달 웨이브 <b>${wave}</b> · 처치 <b>${kills}</b>`;
+  document.getElementById('overstat').innerHTML=
+    `도달 웨이브 <b>${wave}</b> · 처치 <b>${kills}</b>`+
+    (best?`<br>🏆 최고 기록 웨이브 <b>${best.wave}</b>${isNew?' — <span style="color:#8fe07a">신기록!</span>':''}`:'');
+  document.getElementById('contbtn').style.display = (win && !endless && netMode!=='guest') ? 'block' : 'none';
 }
+document.getElementById('contbtn').onclick=()=>{
+  endless=true; gameOver=false; inWave=false; waveTimer=15;
+  document.getElementById('over').style.display='none';
+  banner('∞ 무한 모드 — 끝까지 버텨라!');
+  sfx('wave');
+};
 
 /* ══════════════ 카메라 & 렌더링 ══════════════ */
 const cam={x:WVW/2,y:WVH/2,z:1}; // z=1이 전체 보기(핏), 최대 4배 줌
@@ -1921,9 +1951,22 @@ function applySnap(s){
     r:EDEFS[a[0]].r, air:EDEFS[a[0]].air, boss:!!EDEFS[a[0]].boss, dead:false}));
   bullets=s.bl.map(a=>({x:a[0],y:a[1],r:a[2],c:a[3],a:a[4]}));
   if(s.over && !gameOver) endGame(s.over===2);
+  else if(!s.over && gameOver && core.hp>0){ // 호스트가 무한 모드로 계속 → 게스트도 복귀
+    gameOver=false; endless=true;
+    document.getElementById('over').style.display='none';
+    banner('∞ 무한 모드');
+  }
 }
 
 /* ══════════════ 시작 ══════════════ */
+{
+  const b0=loadBest();
+  if(b0){
+    const el=document.getElementById('bestline');
+    el.style.display='block';
+    el.innerHTML=`🏆 최고 기록: 웨이브 <b>${b0.wave}</b> · 처치 ${b0.kills}`;
+  }
+}
 genMap();
 requestAnimationFrame(ts=>{ last=ts; tick(ts); });
 </script>

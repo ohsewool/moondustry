@@ -67,6 +67,15 @@ copper=0; waveTimer=5;
 let crashed=null;
 try{ for(let i=1;i<=6000;i++) tick(i*50); }
 catch(e){ crashed=String(e.stack).split('\n').slice(0,4); }
+// ── 무한 모드: 웨이브 20 클리어 → 승리 → 계속 → 웨이브 21 진행 검증 ──
+let endlessOk=false, winShown=false;
+try{
+  wave=20; endless=false; inWave=true; enemies=[]; spawnQueue=[]; gameOver=false;
+  tick(6001*50);
+  winShown = gameOver===true;
+  document.getElementById('contbtn').onclick();
+  for(let i=0;i<600;i++){ tick((6002+i)*50); if(wave>=21 && inWave){ endlessOk=true; break; } }
+}catch(e){ crashed=crashed||String(e.stack).split('\n').slice(0,4); }
 console.log(JSON.stringify({
   mapStats, campBlocked, crashed, junctionOk,
   chainDuoAmmo: chainDuo?chainDuo.ammo:'배치 실패',
@@ -74,5 +83,6 @@ console.log(JSON.stringify({
   poweredSmelterSat: chainSmelter?powerSat(chainSmelter):'배치 실패',
   lonelySmelterIdle: lonelySmelter ? (lonelySmelter.out.length===0 && lonelySmelter.inv.c===3) : '배치 실패',
   siliconDuo: siliconDuo ? {kind:siliconDuo.ammoKind, ammo:siliconDuo.ammo} : '배치 실패',
+  winShown, endlessOk,
   copperEarned: Math.floor(copper), wave, kills, coreHp:Math.ceil(core.hp), gameOver
 }));

@@ -1,0 +1,5 @@
+node_modules/
+tools/game.js
+tools/test.js
+tools/shot-*.png
+.wrangler/

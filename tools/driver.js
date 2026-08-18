@@ -32,15 +32,22 @@ place('conveyor',tx0+3,ty);
 place('duo',tx0+4,ty);
 const chainDuo=map[ty][tx0+4].b; if(chainDuo) chainDuo.ammo=0;
 const junctionOk = !!(map[ty][tx0+2].b && map[ty][tx0+2].b.type==='junction');
-// ── 제련 사슬: 구리 드릴 + 티타늄 드릴 → 제련소 → 스펙터 ──
+// ── 제련+전력 사슬: 석탄드릴→발전기, 노드 급전, 구리+티타늄→제련소→스펙터 ──
 const sy=core.y-3, sx0=core.x-6;
 for(let i=0;i<3;i++){ const t=map[sy][sx0+i]; t.rock=false; t.b=null; t.ore=null; }
-const tUp=map[sy-1][sx0+1]; tUp.rock=false; tUp.b=null; tUp.ore=null;
-map[sy][sx0].ore='c'; map[sy][sx0+2].ore='t';
+for(let i=-1;i<3;i++){ const t=map[sy-1][sx0+i]; t.rock=false; t.b=null; t.ore=null; }
+map[sy][sx0].ore='c'; map[sy][sx0+2].ore='t'; map[sy-1][sx0-1].ore='k';
 computeFlow();
 place('drill',sx0,sy); place('smelter',sx0+1,sy); place('drill',sx0+2,sy);
-place('spectre',sx0+1,sy-1);
+place('drill',sx0-1,sy-1); place('generator',sx0,sy-1);
+place('spectre',sx0+1,sy-1); place('node',sx0+2,sy-1);
 const chainSpectre=map[sy-1][sx0+1].b; if(chainSpectre) chainSpectre.ammo=0;
+const chainSmelter=map[sy][sx0+1].b;
+// 전력 없는 제련소 대조군: 노드 커버 밖에 고립 설치
+const iy=core.y+6;
+if(map[iy] && map[iy][sx0]){ map[iy][sx0].rock=false; map[iy][sx0].b=null; map[iy][sx0].ore=null; computeFlow(); place('smelter',sx0,iy); }
+const lonelySmelter=map[iy] && map[iy][sx0] ? map[iy][sx0].b : null;
+if(lonelySmelter){ lonelySmelter.inC=3; lonelySmelter.inT=3; }
 let placedT=0;
 for(let r=2;r<=4;r++) for(let y=core.y-r;y<=core.y+1+r;y++) for(let x=core.x-r;x<=core.x+1+r;x++)
   if(placedT<10 && canPlace('duo',x,y)){ place('duo',x,y); map[y][x].b.ammo=1e9; placedT++; }
@@ -54,5 +61,7 @@ console.log(JSON.stringify({
   mapStats, campBlocked, crashed, junctionOk,
   chainDuoAmmo: chainDuo?chainDuo.ammo:'배치 실패',
   chainSpectreAmmo: chainSpectre?chainSpectre.ammo:'배치 실패',
+  poweredSmelterSat: chainSmelter?powerSat(chainSmelter):'배치 실패',
+  lonelySmelterIdle: lonelySmelter ? (lonelySmelter.out.length===0 && lonelySmelter.inC===3) : '배치 실패',
   copperEarned: Math.floor(copper), wave, kills, coreHp:Math.ceil(core.hp), gameOver
 }));

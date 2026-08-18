@@ -292,7 +292,8 @@ const SHOT = n => `${__dirname}/shot-${n}.png`;
     }
     if (st.copper > 280 && menders < clusters && await buildMender(m, st)) continue;
     if (econChains < 4 && st.copper > 260 && await buildEcon(m)) continue;
-    if (st.copper > 600 && await buildFedTurret(m, world.core.x - 3, world.core.y + Math.floor(Math.random() * 6) - 3, 'lancer')) continue;
+    // 랜서는 전력 필요 — 봇은 전력 인프라를 안 지으므로 무전력 스캐터로 증원
+    if (st.copper > 600 && await buildFedTurret(m, world.core.x - 3, world.core.y + Math.floor(Math.random() * 6) - 3, 'scatter')) continue;
     // 준비됐으면 웨이브 조기 소환
     const nTurrets = st.builds.filter(b => ['duo','scatter','lancer'].includes(b.t)).length;
     if (!st.inWave && st.noAmmo === 0 && nTurrets >= 3 && st.copper > 60)

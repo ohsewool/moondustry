@@ -76,13 +76,39 @@ try{
   document.getElementById('contbtn').onclick();
   for(let i=0;i<600;i++){ tick((6002+i)*50); if(wave>=21 && inWave){ endlessOk=true; break; } }
 }catch(e){ crashed=crashed||String(e.stack).split('\n').slice(0,4); }
+// TD 지표는 스커미시 실행 전에 캡처
+const td={copperEarned:Math.floor(copper), wave, kills, coreHp:Math.ceil(core.hp), gameOver};
+// ── 스커미시 스모크: 대칭 맵 + 병영 + AI가 실제로 싸우는지 ──
+let sk={};
+try{
+  mode='skirmish'; gameOver=false; endless=false; copper=3000; kills=0;
+  genMapSkirmish();
+  started=true;
+  // 아군 병영 + 진군 명령
+  let bkPlaced=false;
+  outer: for(let y=core.y-3;y<=core.y+4;y++) for(let x=core.x+2;x<=core.x+8;x++){
+    if(canPlace('barracks',x,y)){ place('barracks',x,y); bkPlaced=true; break outer; }
+  }
+  allyMode='attack';
+  let crashed2=null;
+  try{ for(let i=1;i<=7200;i++) tick(1e6+i*50); } // 360초
+  catch(e){ crashed2=String(e.stack).split('\n').slice(0,4); }
+  const allies=enemies.filter(e=>!e.dead&&(e.team||1)===0).length;
+  const foes=enemies.filter(e=>!e.dead&&(e.team||1)===1).length;
+  sk={ bkPlaced, crashed2,
+    flow2Ok: flow2 && flow2[core.y][core.x+2]!==Infinity,
+    alliesAlive:allies, foesAlive:foes, kills,
+    myCore:Math.ceil(core.hp), aiCore:Math.ceil(core2.hp), aiGold:Math.floor(aiGold),
+    aiDuos:builds.filter(b=>b.team===1&&b.type==='duo').length,
+    over:gameOver };
+}catch(e){ sk={fatal:String(e.stack).split('\n').slice(0,3)}; }
 console.log(JSON.stringify({
-  mapStats, campBlocked, crashed, junctionOk,
+  mapStats, campBlocked, crashed, junctionOk, skirmish:sk,
   chainDuoAmmo: chainDuo?chainDuo.ammo:'배치 실패',
   chainSpectreAmmo: chainSpectre?chainSpectre.ammo:'배치 실패',
   poweredSmelterSat: chainSmelter?powerSat(chainSmelter):'배치 실패',
   lonelySmelterIdle: lonelySmelter ? (lonelySmelter.out.length===0 && lonelySmelter.inv.c===3) : '배치 실패',
   siliconDuo: siliconDuo ? {kind:siliconDuo.ammoKind, ammo:siliconDuo.ammo} : '배치 실패',
   winShown, endlessOk,
-  copperEarned: Math.floor(copper), wave, kills, coreHp:Math.ceil(core.hp), gameOver
+  ...td
 }));

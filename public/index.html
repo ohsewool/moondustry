@@ -135,8 +135,9 @@
       <b>🧱 벽</b> 적의 길을 막는다 — 막히면 적이 부수고 온다<br>
       <b>🎯 목표</b> 웨이브 20 클리어 — 그 뒤엔 <b>∞ 무한 모드</b>로 기록 도전
     </div>
-    <button class="bigbtn" id="startbtn">출 격</button>
-    <button id="coopbtn" style="margin-top:12px;width:100%;padding:11px;border:1px solid #3a4a3a;border-radius:10px;background:transparent;color:#9ab89a;font-size:0.9rem;cursor:pointer;letter-spacing:1px">🤝 협동 방 만들기</button>
+    <button class="bigbtn" id="startbtn">출 격 (타워 디펜스)</button>
+    <button class="bigbtn" id="skirmishbtn" style="margin-top:10px;background:#e8907a">⚔ 스커미시 — AI와 1:1 코어 듀얼</button>
+    <button id="coopbtn" style="margin-top:12px;width:100%;padding:11px;border:1px solid #3a4a3a;border-radius:10px;background:transparent;color:#9ab89a;font-size:0.9rem;cursor:pointer;letter-spacing:1px">🤝 협동 방 만들기 (디펜스)</button>
     <div id="coopinfo" style="margin-top:10px;font-size:0.75rem;color:#8a9a8a;word-break:break-all;line-height:1.6"></div>
     <div style="margin-top:14px;font-size:0.75rem"><a href="/classic/" style="color:#8a8a7a">🕹 오리지널 Mindustry Classic 플레이 →</a></div>
   </div>
@@ -180,10 +181,16 @@ const DEFS = {
   junction: { name:'정션',     cost:5,   hp:60,  desc:'컨베이어 교차로 — 벨트가 서로 통과 (컨베이어를 가로질러 놓으면 자동 생성)' },
   node:     { name:'노드',     cost:20,  hp:70,  range:108, desc:'전력망 — 노드끼리 연결되고 반경 내 건물에 급전' },
   generator:{ name:'발전기',   cost:80,  hp:150, range:60, desc:'석탄을 태워 6⚡ 생산 — 반경 2.5칸 자가 급전, 멀리는 노드로 송전' },
+  barracks: { name:'병영',     cost:200, hp:280, desc:'구리 60으로 병사 자동 훈련 — ⚔ 스커미시 전용' },
 };
+/* 스커미시 (1:1 코어 듀얼) */
+const SOLDIER = { hp:95, spd:40, dmg:12, reload:0.8, r:7, reward:5, atkRange:65 };
+const TRAIN_COST = 60, ARMY_CAP = 30, TRAIN_TIME = 4;
+const SKIRMISH_LIMIT = 12*60;      // 초 — 넘기면 코어 HP 비율 판정
+const AI_RALLY = 8, AI_RALLY_LATE = 4; // 집결 최소 병력 (NEXT NATION식)
 const ENAMES = { dagger:'대거', crawler:'크롤러', fortress:'포트리스', flier:'플라이어', boss:'⚠보스' };
 const TIP_DEFAULT = '클릭·드래그: 건설 · R: 회전 · 우클릭: 판매 · 1~0: 선택 · 휠: 줌 · WASD/휠클릭: 이동 · Space: 일시정지';
-const HOTBAR = ['drill','conveyor','router','duo','wall','mender','scatter','lancer','node','generator','smelter','siliconer','spectre'];
+const HOTBAR = ['drill','conveyor','router','duo','wall','mender','scatter','lancer','node','generator','smelter','siliconer','spectre','barracks'];
 const TURRETS = new Set(['duo','scatter','lancer','spectre']);
 const DIRS = [{x:1,y:0},{x:0,y:1},{x:-1,y:0},{x:0,y:-1}];
 /* 아이템 종류: c=구리, t=티타늄, a=합금, k=석탄, s=모래, i=실리콘 */
@@ -330,9 +337,13 @@ if(typeof window!=='undefined') setInterval(musicTick,120);
 /* ══════════════ 상태 ══════════════ */
 let map = [];            // [y][x] = {rock, ore, b(건물ref)}
 let builds = [];         // 건물 목록
-let enemies = [], bullets = [], parts = [];
-let flow = null;         // 흐름장 (코어까지 거리)
-let core = null;
+let enemies = [], bullets = [], parts = [];  // enemies = 모든 유닛 (team 0=아군, 1=적)
+let flow = null;         // 흐름장 (내 코어까지 거리)
+let flow2 = null;        // 흐름장 (적 코어까지 거리 — 스커미시)
+let core = null, core2 = null;
+let mode = 'td';         // 'td' | 'skirmish'
+let allyMode = 'defend'; // 아군 병사 전역 명령
+let skirmishT = 0, aiGold = 300, aiTickT = 0, aiMode = 'build', aiSpots = null;
 let copper = 220, wave = 0, waveTimer = 38, inWave = false, spawnQueue = [];
 let selected = null;     // 선택한 건설 타입
 let ghostRot = 0;        // 컨베이어 설치 방향 (0우 1하 2좌 3상)
@@ -506,6 +517,108 @@ function genMap(){
   renderFloor();
 }
 
+/* ══════════════ 스커미시 맵 (좌우 대칭 + AI 기지) ══════════════ */
+function genMapSkirmish(){
+  const g=[]; for(let i=0;i<7;i++) g.push(Array.from({length:64},()=>Math.random()));
+  const noise=(x,y)=>{ let v=0,amp=1,fq=0.09;
+    for(let o=0;o<3;o++){ const gx=x*fq,gy=y*fq,ix=Math.floor(gx),iy=Math.floor(gy);
+      const fx=gx-ix,fy=gy-iy,row=g[o*2],row2=g[o*2+1];
+      const a=row[(ix+iy*7)&63],b=row[(ix+1+iy*7)&63],c=row2[(ix+(iy+1)*7)&63],d=row2[(ix+1+(iy+1)*7)&63];
+      const sx=fx*fx*(3-2*fx),sy=fy*fy*(3-2*fy);
+      v+=((a+(b-a)*sx)+((c+(d-c)*sx)-(a+(b-a)*sx))*sy)*amp; amp*=0.5; fq*=2.1; }
+    return v/1.75; };
+  map=[];
+  for(let y=0;y<MH;y++){ const row=[]; for(let x=0;x<MW;x++) row.push({rock:true,ore:null,b:null,shade:noise(x+7,y+31)}); map.push(row); }
+  const carve=(cx,cy,r)=>{ for(let dy=-r;dy<=r;dy++) for(let dx=-r;dx<=r;dx++){ if(dx*dx+dy*dy>r*r+1) continue; const t=tileAt(cx+dx,cy+dy); if(t) t.rock=false; } };
+  const cy=Math.floor(MH/2)-1;
+  core ={type:'core',x:5,   y:cy,w:2,h:2,hp:2600,maxhp:2600,rot:0,cd:0,team:0};
+  core2={type:'core',x:MW-7,y:cy,w:2,h:2,hp:2600,maxhp:2600,rot:0,cd:0,team:1};
+  builds=[core,core2]; enemies=[]; bullets=[]; parts=[]; spawns=[];
+  carve(6,cy+1,6); // 아군 광장 (적 광장은 미러로 생김)
+  // 레인 3개: 광장 → 중앙 병목 아레나
+  const midX=Math.floor(MW/2);
+  const mids=[{x:midX,y:Math.floor(MH*0.18)},{x:midX,y:cy+1},{x:midX,y:Math.floor(MH*0.82)}];
+  for(const md of mids){
+    let x=8,y=cy+1,guard=0;
+    while((x!==md.x||y!==md.y)&&guard++<2500){
+      carve(x,y,1);
+      const opts=[];
+      if(x<md.x) opts.push([1,0],[1,0]); if(y<md.y) opts.push([0,1],[0,1]); if(y>md.y) opts.push([0,-1],[0,-1]);
+      opts.push([0,1],[0,-1],[1,0]);
+      const [dx,dy]=opts[Math.floor(Math.random()*opts.length)];
+      x=Math.max(1,Math.min(midX,x+dx)); y=Math.max(1,Math.min(MH-2,y+dy));
+    }
+    carve(md.x,md.y,2);
+  }
+  // 건설 포켓 (좌반)
+  let pockets=0,guard=0;
+  while(pockets<16&&guard++<900){
+    const x=Math.floor(rnd(6,midX-1)), y=Math.floor(rnd(2,MH-2));
+    if(!map[y][x].rock) continue;
+    if([[1,0],[-1,0],[0,1],[0,-1]].some(([ox,oy])=>{const n=tileAt(x+ox,y+oy);return n&&!n.rock;})){ const rr=Math.random(); carve(x,y,rr<0.4?1:2); pockets++; }
+  }
+  // 광석 (좌반): 시작 구리·석탄·모래·티탄 + 중앙 위험 구리·티탄
+  const orePatch=(cx2,cy2,n,kind)=>{ kind=kind||'c'; let put=0,g2=0;
+    while(put<n&&g2++<60){ const t=tileAt(cx2+Math.floor(rnd(-2,3)),cy2+Math.floor(rnd(-2,3))); if(t&&!t.rock&&!t.ore){ t.ore=kind; put++; } } return put; };
+  const near=(kind,n,dmin,dmax)=>{ let s=0;
+    while(s++<400){ const x=Math.floor(rnd(4,20)), y=Math.floor(rnd(3,MH-3));
+      const d=Math.hypot(x-6,y-(cy+1));
+      if(d>=dmin&&d<=dmax&&!map[y][x].rock){ carve(x,y,2); if(orePatch(x,y,n,kind)>=Math.min(2,n)) return true; } }
+    const fx=9,fy=Math.max(3,cy-5); carve(fx,fy,2); orePatch(fx,fy,n,kind); return true; };
+  near('c',5,4,9); near('k',3,5,11); near('s',3,5,11); near('t',3,6,12);
+  for(const md of mids){ orePatch(md.x-3,md.y,4,'c'); orePatch(md.x-5,md.y+Math.floor(rnd(-3,4)),3,'t'); }
+  // ── 우반 미러 ──
+  for(let y=0;y<MH;y++) for(let x=0;x<midX;x++){
+    const L=map[y][x], R=map[y][MW-1-x];
+    R.rock=L.rock; R.ore=L.ore;
+  }
+  for(let dy=0;dy<2;dy++) for(let dx=0;dx<2;dx++){
+    const a=map[core.y+dy][core.x+dx];  a.b=core;  a.rock=false; a.ore=null;
+    const b2=map[core2.y+dy][core2.x+dx]; b2.b=core2; b2.rock=false; b2.ore=null;
+  }
+  // ── AI 기지 프리셋 ──
+  const mkAI=(type,x,y,extra)=>{
+    const t=tileAt(x,y); if(!t||t.b) return null;
+    t.rock=false;
+    const d=DEFS[type];
+    const b={type,x,y,w:1,h:1,hp:d.hp,maxhp:d.hp,rot:Math.PI,cd:0,flash:0,alt:0,team:1,...extra};
+    builds.push(b); t.b=b; return b;
+  };
+  aiSpots={turrets:[],barracks:null,drills:0};
+  for(const [ox,oy] of [[-2,-2],[-2,3],[2,-2],[2,3]]){
+    const x=core2.x+ox, y=core2.y+oy;
+    if(mkAI('duo',x,y,{ammo:1e9,ammoKind:'c'})) aiSpots.turrets.push({x,y});
+  }
+  const bx=core2.x-3, by=core2.y+1;
+  tileAt(bx,by).ore=null;
+  if(mkAI('barracks',bx,by,{trainT:0})) aiSpots.barracks={x:bx,y:by};
+  let dCount=0; // 광석 위 드릴 (AI 수입원 — 파괴하면 적 경제 타격)
+  for(let y=core2.y-8;y<=core2.y+9&&dCount<4;y++) for(let x=core2.x-8;x<MW-1&&dCount<4;x++){
+    const t=tileAt(x,y);
+    if(t&&t.ore&&!t.b&&!t.rock){ if(mkAI('drill',x,y,{buf:[],outDir:0,oreKind:t.ore,mineT:0})) dCount++; }
+  }
+  skirmishT=0; aiGold=300; aiTickT=0; aiMode='build'; allyMode='defend';
+  computeFlow(); renderFloor();
+}
+/* 적 코어 흐름장 */
+function computeFlow2(){
+  if(!core2) return;
+  flow2=Array.from({length:MH},()=>new Array(MW).fill(Infinity));
+  const q=[];
+  for(let dy=0;dy<2;dy++) for(let dx=0;dx<2;dx++){ flow2[core2.y+dy][core2.x+dx]=0; q.push([core2.x+dx,core2.y+dy]); }
+  let h=0;
+  while(h<q.length){
+    const [x,y]=q[h++]; const d=flow2[y][x];
+    for(const [ox,oy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+ox, ny=y+oy;
+      if(!inMap(nx,ny)) continue;
+      const t=map[ny][nx];
+      if(t.rock || (t.b && t.b!==core2)) continue;
+      if(flow2[ny][nx]>d+1){ flow2[ny][nx]=d+1; q.push([nx,ny]); }
+    }
+  }
+}
+
 /* ══════════════ 바닥 사전 렌더 (오프스크린 캔버스) ══════════════ */
 function renderFloor(){
   floorCv=document.createElement('canvas');
@@ -665,6 +778,7 @@ function computeFlow(){
   }
   computePaths();
   computePower();
+  if(mode==='skirmish') computeFlow2();
 }
 
 /* 스폰→코어 예상 경로 (점선 표시용) */
@@ -697,6 +811,7 @@ function canPlace(type,x,y){
   if(!t || t.rock) return false;
   if(t.b) return type==='conveyor' && crossable(t);
   if(type==='drill' && !t.ore) return false;
+  if(type==='barracks' && mode!=='skirmish') return false; // 병영은 스커미시 전용
   if(spawns.some(s=>dist2(x,y,s.x,s.y)<SPAWN_SAFE*SPAWN_SAFE)) return false; // 스폰 캠핑 금지
   return true;
 }
@@ -721,6 +836,7 @@ function place(type,x,y){
   if(type==='router'){ b.buf=[]; b.outDir=0; }
   if(RECIPES[type]){ b.inv={}; b.craftT=0; b.out=[]; b.outDir=0; }
   if(type==='generator'){ b.fuel=0; b.burnT=0; }
+  if(type==='barracks'){ b.trainT=0; }
   if(TURRETS.has(type)||type==='mender'){ b.ammo=10; b.ammoKind=Object.keys(AMMO_TYPES[type])[0]; } // 건설 시 기본 탄약 약간
   builds.push(b); map[y][x].b=b;
   computeFlow();
@@ -728,7 +844,7 @@ function place(type,x,y){
   sfx('build');
 }
 function destroy(b, refund){
-  if(b===core) return;
+  if(b===core || b===core2) return;
   for(let yy=0;yy<MH;yy++) for(let xx=0;xx<MW;xx++) if(map[yy][xx].b===b) map[yy][xx].b=null;
   builds=builds.filter(o=>o!==b);
   if(refund){ copper+=Math.floor(DEFS[b.type].cost*0.5); sfx('sell'); }
@@ -767,62 +883,154 @@ function spawnEnemy(type, sp){
   });
 }
 
-/* ══════════════ 적 AI ══════════════ */
+/* ══════════════ 스커미시: 병사·병영·적 AI ══════════════ */
+function spawnSoldier(team,tx,ty){
+  enemies.push({ type:'soldier', ...structuredClone(SOLDIER), maxhp:SOLDIER.hp,
+    x:tx*TILE+12+rnd(-6,6), y:ty*TILE+12+rnd(-6,6), rot:team===0?0:Math.PI,
+    cd:rnd(0,0.5), target:null, team,
+    mode: team===0 ? allyMode : (aiMode==='attack'?'attack':'defend') });
+  puff(tx*TILE+12,ty*TILE+12,team===0?'#ffd37f':'#ff8a70',4);
+}
+function trainAt(b,team){
+  // 병영 주변(인접 우선, 최대 5×5) 빈 바닥에 스폰
+  for(let r=1;r<=2;r++){
+    for(let dy=-r;dy<=r;dy++) for(let dx=-r;dx<=r;dx++){
+      if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
+      const t=tileAt(b.x+dx,b.y+dy);
+      if(t && !t.rock && !t.b){ spawnSoldier(team,b.x+dx,b.y+dy); return true; }
+    }
+  }
+  return false;
+}
+function updateBarracks(b,dt){
+  if((b.team||0)!==0) return; // AI 병영은 aiTick이 관리
+  b.trainT+=dt;
+  if(b.trainT<TRAIN_TIME) return;
+  b.trainT=0;
+  const allies=enemies.filter(e=>!e.dead&&(e.team??1)===0).length;
+  if(copper>=TRAIN_COST && allies<ARMY_CAP && trainAt(b,0)){ copper-=TRAIN_COST; sfx('build'); }
+}
+function aiBuild(type,x,y,extra){
+  const t=tileAt(x,y); if(!t||t.b||t.rock) return null;
+  const d=DEFS[type];
+  const b={type,x,y,w:1,h:1,hp:d.hp,maxhp:d.hp,rot:Math.PI,cd:0,flash:0,alt:0,team:1,...extra};
+  builds.push(b); t.b=b; computeFlow();
+  puff(x*TILE+12,y*TILE+12,'#ff8a70',6);
+  return b;
+}
+/* NEXT NATION식 매크로: 경제 틱 → 훈련 → 재건 → 집결 공격/회군 판단 */
+function aiTick(){
+  const aiDrills=builds.filter(b=>b.team===1&&b.type==='drill').length;
+  aiGold += 14 + 4*aiDrills; // 2초당 수입 — 드릴 파괴 = 적 경제 타격
+  const aiArmy=enemies.filter(e=>!e.dead&&(e.team??1)===1).length;
+  const bkT=aiSpots.barracks && tileAt(aiSpots.barracks.x,aiSpots.barracks.y);
+  const bk=bkT && bkT.b && bkT.b.type==='barracks' ? bkT.b : null;
+  if(bk && aiArmy<ARMY_CAP && aiGold>=TRAIN_COST+10){ if(trainAt(bk,1)) aiGold-=TRAIN_COST; }
+  // 파괴된 포탑·병영 재건
+  for(const s of aiSpots.turrets){
+    const t=tileAt(s.x,s.y);
+    if(t && !t.b && aiGold>=120){ if(aiBuild('duo',s.x,s.y,{ammo:1e9,ammoKind:'c'})) aiGold-=120; }
+  }
+  if(!bk && aiSpots.barracks && aiGold>=260){
+    if(aiBuild('barracks',aiSpots.barracks.x,aiSpots.barracks.y,{trainT:0})) aiGold-=260;
+  }
+  // 공격/방어: 본진 위협 시 회군, 집결 병력이 차면 진군 (후반엔 문턱 하향)
+  const threat=enemies.some(e=>!e.dead&&(e.team??1)===0 && dist2(e.x,e.y,(core2.x+1)*TILE,(core2.y+1)*TILE)<(TILE*10)**2);
+  const rally = skirmishT>SKIRMISH_LIMIT*0.6 ? AI_RALLY_LATE : AI_RALLY;
+  if(threat) aiMode='defend';
+  else if(aiArmy>=rally) aiMode='attack';
+  else if(aiArmy<=2) aiMode='defend';
+  for(const e of enemies) if(!e.dead&&(e.team??1)===1&&e.type==='soldier') e.mode = aiMode==='attack'?'attack':'defend';
+}
+
+/* ══════════════ 유닛 AI (팀 공용 — team 0=아군, 1=적) ══════════════ */
 function nearestBuild(e){
+  const foeTeam = (e.team??1)===1 ? 0 : 1;
   let best=null, bd=1e18;
   for(const b of builds){
+    if((b.team||0)!==foeTeam) continue;
     const bx=(b.x+b.w/2)*TILE, by=(b.y+b.h/2)*TILE;
     const d=dist2(e.x,e.y,bx,by);
     if(d<bd){ bd=d; best=b; }
   }
   return best;
 }
+function followField(e,f,dt){
+  const tx=Math.floor(e.x/TILE), ty=Math.floor(e.y/TILE);
+  if(!f || !inMap(tx,ty) || f[ty][tx]===Infinity) return false;
+  let bx=tx, by=ty, bd=f[ty][tx];
+  for(const [ox,oy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+    const nx=tx+ox, ny=ty+oy;
+    if(inMap(nx,ny) && f[ny][nx]<bd){ bd=f[ny][nx]; bx=nx; by=ny; }
+  }
+  const gx=bx*TILE+12, gy=by*TILE+12, a=Math.atan2(gy-e.y,gx-e.x);
+  e.rot=a; e.x+=Math.cos(a)*e.spd*dt; e.y+=Math.sin(a)*e.spd*dt;
+  return true;
+}
 function updateEnemy(e,dt){
-  const speed=e.spd;
+  const speed=e.spd, team=e.team??1;
+  const foeCore = team===1 ? core : core2;
+  const homeCore= team===1 ? core2 : core;
+  const attackField = team===1 ? flow : flow2;
+  const homeField   = team===1 ? flow2 : flow;
   if(e.air){
-    // 공중: 코어 직행
-    const cx=(core.x+1)*TILE, cy=(core.y+1)*TILE;
+    // 공중: 코어 직행 (TD 전용)
+    const cx=(foeCore.x+1)*TILE, cy=(foeCore.y+1)*TILE;
     const d=Math.hypot(cx-e.x,cy-e.y);
     e.rot=Math.atan2(cy-e.y,cx-e.x);
     if(d>85){ e.x+=Math.cos(e.rot)*speed*dt; e.y+=Math.sin(e.rot)*speed*dt; }
-    else { e.cd-=dt; if(e.cd<=0){ e.cd=e.reload; ebullet(e,core); } }
+    else { e.cd-=dt; if(e.cd<=0){ e.cd=e.reload; ebullet(e,foeCore); } }
     return;
   }
+  // ── 교전: 사거리 안팎의 상대 유닛 우선 ──
+  if(mode==='skirmish'){
+    const engage=e.atkRange||55;
+    let foeU=null, fd=1e18;
+    for(const o of enemies){
+      if(o.dead || (o.team??1)===team) continue;
+      const dd=dist2(e.x,e.y,o.x,o.y);
+      if(dd<fd){ fd=dd; foeU=o; }
+    }
+    if(foeU && fd<(engage*1.6)**2){
+      e.rot=Math.atan2(foeU.y-e.y,foeU.x-e.x);
+      if(fd>engage*engage){ e.x+=Math.cos(e.rot)*speed*dt; e.y+=Math.sin(e.rot)*speed*dt; }
+      else { e.cd-=dt; if(e.cd<=0){ e.cd=e.reload;
+        bullets.push({x:e.x,y:e.y,a:e.rot,spd:300,dmg:e.dmg,life:engage/300+0.15,c:team===0?'#ffe4a8':'#ff6a5a',r:2.2,team}); } }
+      return;
+    }
+    // ── 회군(방어) 모드: 자기 코어 곁으로 ──
+    if(e.mode==='defend' && homeCore){
+      const hx=(homeCore.x+1)*TILE, hy=(homeCore.y+1)*TILE;
+      if(dist2(e.x,e.y,hx,hy)>(TILE*4.5)**2) followField(e,homeField,dt);
+      return;
+    }
+  }
   const tx=Math.floor(e.x/TILE), ty=Math.floor(e.y/TILE);
-  let blocked = !inMap(tx,ty) || flow[ty][tx]===Infinity;
+  let blocked = !inMap(tx,ty) || !attackField || attackField[ty][tx]===Infinity;
   let target=null;
   if(blocked){
-    target = e.target && builds.includes(e.target) ? e.target : nearestBuild(e);
+    target = e.target && builds.includes(e.target) && (e.target.team||0)!==team ? e.target : nearestBuild(e);
     e.target=target;
   }
-  // 원거리 유닛: 코어가 사거리에 들어오면 멈춰서 사격
+  // 원거리 유닛: 상대 코어가 사거리에 들어오면 멈춰서 사격
   if(!blocked && e.atkRange){
-    const ccx=(core.x+1)*TILE, ccy=(core.y+1)*TILE;
+    const ccx=(foeCore.x+1)*TILE, ccy=(foeCore.y+1)*TILE;
     if(dist2(e.x,e.y,ccx,ccy)<e.atkRange*e.atkRange){
       e.rot=Math.atan2(ccy-e.y,ccx-e.x);
-      e.cd-=dt; if(e.cd<=0){ e.cd=e.reload; ebullet(e,core); }
+      e.cd-=dt; if(e.cd<=0){ e.cd=e.reload; ebullet(e,foeCore); }
       return;
     }
   }
   if(!blocked){
-    // 흐름장 따라 이동
-    let bx=tx, by=ty, bd=flow[ty]?.[tx]??Infinity;
-    for(const [ox,oy] of [[1,0],[-1,0],[0,1],[0,-1]]){
-      const nx=tx+ox, ny=ty+oy;
-      if(inMap(nx,ny) && flow[ny][nx]<bd){ bd=flow[ny][nx]; bx=nx; by=ny; }
-    }
-    const gx=bx*TILE+12, gy=by*TILE+12;
-    const a=Math.atan2(gy-e.y,gx-e.x);
-    e.rot=a;
-    e.x+=Math.cos(a)*speed*dt; e.y+=Math.sin(a)*speed*dt;
+    followField(e,attackField,dt);
     // 코어 도달?
-    if(flow[ty]?.[tx]===0 || dist2(e.x,e.y,(core.x+1)*TILE,(core.y+1)*TILE)<(TILE*1.4)**2){
-      if(e.boom){ hitBuild(core,e.dmg); boom(e); return; }
-      e.cd-=dt; if(e.cd<=0){ e.cd=e.reload; hitBuild(core,e.dmg); slash(e,core); }
+    if(attackField[ty]?.[tx]===0 || dist2(e.x,e.y,(foeCore.x+1)*TILE,(foeCore.y+1)*TILE)<(TILE*1.4)**2){
+      if(e.boom){ hitBuild(foeCore,e.dmg); boom(e); return; }
+      e.cd-=dt; if(e.cd<=0){ e.cd=e.reload; hitBuild(foeCore,e.dmg); slash(e,foeCore); }
     }
     return;
   }
-  // 막힘 → 가장 가까운 건물 공격 (원거리 유닛은 사거리에서 사격 — 벨트 미로 카운터)
+  // 막힘 → 가장 가까운 상대 건물 공격 (원거리 유닛은 사거리에서 사격 — 벨트 미로 카운터)
   if(!target) return;
   const bx=(target.x+target.w/2)*TILE, by=(target.y+target.h/2)*TILE;
   const d=Math.hypot(bx-e.x,by-e.y);
@@ -844,6 +1052,7 @@ function hitBuild(b,dmg){
   if(b===core){ sfx('corehit'); addShake(1.0); }
   if(b.hp<=0){
     if(b===core){ endGame(false); return; }
+    if(b===core2){ endGame(true); return; } // 적 코어 파괴 → 승리
     destroy(b,false);
     sfx('break');
     enemies.forEach(e=>{ if(e.target===b) e.target=null; });
@@ -955,7 +1164,7 @@ function updateMender(b,dt){
   const cx=b.x*TILE+12, cy=b.y*TILE+12, R=DEFS.mender.range;
   let healed=false;
   for(const o of builds){
-    if(o.hp>=o.maxhp) continue;
+    if(o.hp>=o.maxhp || (o.team||0)!==(b.team||0)) continue;
     const ox=(o.x+o.w/2)*TILE, oy=(o.y+o.h/2)*TILE;
     if(dist2(cx,cy,ox,oy)>R*R) continue;
     o.hp=Math.min(o.maxhp, o.hp+(o===core?14:26)); healed=true;
@@ -971,9 +1180,11 @@ function updateTurret(b,dt){
   const tDmg=d.dmg*(mod.dmg||1)*Math.pow(1.6,tier-1), tRange=d.range+18*(tier-1), tReload=d.reload*Math.pow(0.88,tier-1);
   const bx=b.x*TILE+12, by=b.y*TILE+12;
   b.cd-=dt*(POWER_DRAW[b.type]?powerSat(b):1); // 전력 소비 포탑은 공급 비율만큼 연사
-  // 타겟: 사거리 내 가장 가까운 적
+  // 타겟: 사거리 내 가장 가까운 상대 팀 유닛
+  const btm=b.team||0;
   let best=null, bd=tRange*tRange;
   for(const e of enemies){
+    if((e.team??1)===btm) continue;
     const dd=dist2(bx,by,e.x,e.y);
     if(dd<bd){ bd=dd; best=e; }
   }
@@ -991,15 +1202,15 @@ function updateTurret(b,dt){
     b.alt=1-b.alt;
     const spd=mod.spd||330;
     const px=bx+Math.cos(b.rot+Math.PI/2)*(b.alt?3.5:-3.5), py=by+Math.sin(b.rot+Math.PI/2)*(b.alt?3.5:-3.5);
-    bullets.push({ x:px,y:py, a:b.rot, spd, dmg:tDmg, life:tRange/spd+(mod.homing?0.45:0.1), c:mod.col||'#ffe4a8', r:2.2+(tier-1)*0.7, homing:mod.homing });
+    bullets.push({ x:px,y:py, a:b.rot, spd, dmg:tDmg, life:tRange/spd+(mod.homing?0.45:0.1), c:mod.col||'#ffe4a8', r:2.2+(tier-1)*0.7, homing:mod.homing, team:btm });
   } else if(b.type==='spectre'){
     b.alt=1-b.alt;
     const px=bx+Math.cos(b.rot+Math.PI/2)*(b.alt?4.5:-4.5), py=by+Math.sin(b.rot+Math.PI/2)*(b.alt?4.5:-4.5);
-    bullets.push({ x:px,y:py, a:b.rot+rnd(-0.04,0.04), spd:390, dmg:tDmg, life:tRange/390+0.1, c:'#ffdf8a', r:2.8+(tier-1)*0.7 });
+    bullets.push({ x:px,y:py, a:b.rot+rnd(-0.04,0.04), spd:390, dmg:tDmg, life:tRange/390+0.1, c:'#ffdf8a', r:2.8+(tier-1)*0.7, team:btm });
   } else if(b.type==='scatter'){
     for(let i=0;i<d.pellets+(mod.pellets||0)+(tier-1)*2;i++){
       const a=b.rot+rnd(-0.28,0.28);
-      bullets.push({ x:bx,y:by, a, spd:rnd(270,340), dmg:tDmg, life:tRange/300+0.05, c:mod.col||'#ffc890', r:1.8+(tier-1)*0.5 });
+      bullets.push({ x:bx,y:by, a, spd:rnd(270,340), dmg:tDmg, life:tRange/300+0.05, c:mod.col||'#ffc890', r:1.8+(tier-1)*0.5, team:btm });
     }
   } else if(b.type==='lancer'){
     // 관통 레이저: 즉발
@@ -1009,7 +1220,7 @@ function updateTurret(b,dt){
       // 점-선분 거리
       const t=Math.max(0,Math.min(1,((e.x-bx)*(ex-bx)+(e.y-by)*(ey-by))/(tRange*tRange)));
       const px=bx+(ex-bx)*t, py=by+(ey-by)*t;
-      if(dist2(e.x,e.y,px,py)<(e.r+5)**2){ damage(e,tDmg); }
+      if((e.team??1)!==btm && dist2(e.x,e.y,px,py)<(e.r+5)**2){ damage(e,tDmg); }
     }
   }
 }
@@ -1027,7 +1238,9 @@ function doUpgrade(b){
 function damage(e,dmg){
   e.hp-=dmg; e.flash=1;
   if(e.hp<=0 && !e.dead){
-    e.dead=true; kills++;
+    e.dead=true;
+    if((e.team??1)===0){ puff(e.x,e.y,'#ffd37f',5); return; } // 아군 병사 전사 — 보상 없음
+    kills++;
     copper+=Math.ceil(e.reward*(1+0.25*Math.max(0,wave-20))); // 무한 구간: 보상도 스케일
     const nShard = e.boss ? 14 : 5;
     for(let i=0;i<nShard;i++){ // 파편으로 산산조각
@@ -1059,7 +1272,7 @@ function updateBullets(dt){
     } else {
       if(b.homing){ // 실리콘 유도탄: 가까운 적에게 선회
         let tgt=null, bd=110*110;
-        for(const e of enemies){ if(e.dead) continue; const dd=dist2(b.x,b.y,e.x,e.y); if(dd<bd){ bd=dd; tgt=e; } }
+        for(const e of enemies){ if(e.dead || (e.team??1)===(b.team||0)) continue; const dd=dist2(b.x,b.y,e.x,e.y); if(dd<bd){ bd=dd; tgt=e; } }
         if(tgt){
           const want=Math.atan2(tgt.y-b.y,tgt.x-b.x);
           let diff=(want-b.a+Math.PI*3)%(Math.PI*2)-Math.PI;
@@ -1070,7 +1283,8 @@ function updateBullets(dt){
       b.life-=dt;
       if(b.life<=0){ b.dead=true; continue; }
       for(const e of enemies){
-        if(!e.dead && dist2(b.x,b.y,e.x,e.y)<(e.r+3)**2){ damage(e,b.dmg); b.dead=true; break; }
+        if(e.dead || (e.team??1)===(b.team||0)) continue;
+        if(dist2(b.x,b.y,e.x,e.y)<(e.r+3)**2){ damage(e,b.dmg); b.dead=true; break; }
       }
     }
   }
@@ -1111,25 +1325,36 @@ function tick(ts){
   render();
 }
 function simStep(dt){
-  // 웨이브 타이머
-  if(!inWave){
-    waveTimer-=dt;
-    if(waveTimer<=0) startWave();
-    document.getElementById('wvtimer').textContent=`다음 웨이브까지 ${Math.max(0,waveTimer).toFixed(0)}초`;
+  if(mode==='td'){
+    // 웨이브 타이머
+    if(!inWave){
+      waveTimer-=dt;
+      if(waveTimer<=0) startWave();
+      document.getElementById('wvtimer').textContent=`다음 웨이브까지 ${Math.max(0,waveTimer).toFixed(0)}초`;
+    } else {
+      document.getElementById('wvtimer').textContent=`적 ${enemies.length+spawnQueue.length}기 남음`;
+    }
+    // 스폰 큐
+    for(const s of spawnQueue) s.delay-=dt;
+    spawnQueue=spawnQueue.filter(s=>{ if(s.delay<=0){ spawnEnemy(s.type,s.sp); return false; } return true; });
+    // 웨이브 종료
+    if(inWave && spawnQueue.length===0 && enemies.length===0){
+      inWave=false; waveTimer=18;
+      const bonus=Math.ceil((15+wave*3)*(1+0.25*Math.max(0,wave-20)));
+      copper+=bonus;
+      saveBest();
+      if(wave>=20 && !endless){ endGame(true); }
+      else { banner(`웨이브 ${wave} 클리어 +${bonus}`); sfx('clear'); }
+    }
   } else {
-    document.getElementById('wvtimer').textContent=`적 ${enemies.length+spawnQueue.length}기 남음`;
-  }
-  // 스폰 큐
-  for(const s of spawnQueue) s.delay-=dt;
-  spawnQueue=spawnQueue.filter(s=>{ if(s.delay<=0){ spawnEnemy(s.type,s.sp); return false; } return true; });
-  // 웨이브 종료
-  if(inWave && spawnQueue.length===0 && enemies.length===0){
-    inWave=false; waveTimer=18;
-    const bonus=Math.ceil((15+wave*3)*(1+0.25*Math.max(0,wave-20)));
-    copper+=bonus;
-    saveBest();
-    if(wave>=20 && !endless){ endGame(true); }
-    else { banner(`웨이브 ${wave} 클리어 +${bonus}`); sfx('clear'); }
+    // ── 스커미시: AI 틱 + 시간제한 판정 ──
+    skirmishT+=dt;
+    aiTickT-=dt;
+    if(aiTickT<=0){ aiTickT=2; aiTick(); }
+    if(skirmishT>=SKIRMISH_LIMIT && !gameOver){
+      endGame(core.hp/core.maxhp >= core2.hp/core2.maxhp); // 시간 초과 → 코어 HP 비율 판정
+      return;
+    }
   }
 
   updatePower(dt);
@@ -1141,17 +1366,18 @@ function simStep(dt){
     b.flash=Math.max(0,b.flash-dt*3);
     b.recoil=Math.max(0,(b.recoil||0)-dt*7);
     if(TURRETS.has(b.type)) updateTurret(b,dt);
-    if(b===core){
+    if(b.type==='core'){
       // 코어 내장 방어포: 약하지만 탄약 불필요 — 새는 적 처리용
       b.cd-=dt;
+      const ctm=b.team||0;
       const cx=(b.x+1)*TILE, cy=(b.y+1)*TILE;
       let best=null, bd=130*130;
-      for(const e of enemies){ const dd=dist2(cx,cy,e.x,e.y); if(dd<bd){ bd=dd; best=e; } }
+      for(const e of enemies){ if((e.team??1)===ctm) continue; const dd=dist2(cx,cy,e.x,e.y); if(dd<bd){ bd=dd; best=e; } }
       if(best){
         b.rot=Math.atan2(best.y-cy,best.x-cx);
         if(b.cd<=0){
           b.cd=0.5;
-          bullets.push({ x:cx+Math.cos(b.rot)*10, y:cy+Math.sin(b.rot)*10, a:b.rot, spd:330, dmg:9, life:130/330+0.1, c:'#ffe4a8', r:2.2 });
+          bullets.push({ x:cx+Math.cos(b.rot)*10, y:cy+Math.sin(b.rot)*10, a:b.rot, spd:330, dmg:9, life:130/330+0.1, c:ctm===1?'#ff9a80':'#ffe4a8', r:2.2, team:ctm });
         }
       }
     }
@@ -1159,6 +1385,7 @@ function simStep(dt){
     if(b.type==='junction') updateJunction(b,dt);
     if(b.type==='router') pushOutput(b);
     if(b.type==='mender') updateMender(b,dt);
+    if(b.type==='barracks') updateBarracks(b,dt);
     if(RECIPES[b.type]) updateCrafter(b,dt);
     if(b.type==='drill'){
       if(b.buf.length<6){ b.mineT+=dt; if(b.mineT>=DEFS.drill.mine){ b.mineT=0; b.buf.push(b.oreKind); puff(b.x*TILE+12,b.y*TILE+12,b.oreKind==='t'?'#8fb8dd':'#c98a50',2); } }
@@ -1174,17 +1401,39 @@ function updateHUD(){
     ? `\n<span style="color:${powSupply>=powDemand?'#ffe36b':'#ff7a5a'}">⚡ 전력 ${powSupply}/${powDemand}</span>`+
       (powOrphan>0?`<span style="color:#ff7a5a"> ⚠미연결 ${powOrphan}</span>`:'')
     : '';
+  let skTxt='';
+  if(mode==='skirmish' && core2){
+    const allies=enemies.filter(e=>!e.dead&&(e.team??1)===0).length;
+    const foes=enemies.filter(e=>!e.dead&&(e.team??1)===1).length;
+    skTxt=`\n<span style="color:#ff8a70">☠ 적 코어 ${Math.max(0,Math.ceil(core2.hp))} / ${core2.maxhp}</span>\n`+
+          `⚔ 아군 ${allies}/${ARMY_CAP} (${allyMode==='attack'?'진군':'방어'}) · 적군 ${foes}`;
+    const rem=Math.max(0,SKIRMISH_LIMIT-skirmishT);
+    document.getElementById('wvnum').textContent='VS';
+    document.getElementById('wvtimer').textContent=`판정까지 ${Math.floor(rem/60)}:${String(Math.floor(rem%60)).padStart(2,'0')}`;
+  }
   document.getElementById('info').innerHTML=
     `<span class="cu">⛏ 구리 ${Math.floor(copper)}</span>\n`+
     `🏰 코어 ${Math.max(0,Math.ceil(core.hp))} / ${core.maxhp}\n`+
-    `☠ 처치 ${kills}`+powTxt;
+    `☠ 처치 ${kills}`+powTxt+skTxt;
   document.querySelectorAll('.slot').forEach((el,i)=>{
     el.classList.toggle('poor', copper<DEFS[HOTBAR[i]].cost);
     el.classList.toggle('sel', selected===HOTBAR[i]);
   });
   // 온보딩 가이드 (첫 웨이브 전)
   const g=document.getElementById('guide');
-  const noAmmo=builds.filter(b=>TURRETS.has(b.type) && b.ammo<=0).length;
+  const noAmmo=builds.filter(b=>TURRETS.has(b.type) && (b.team||0)===0 && b.ammo<=0).length;
+  if(mode==='skirmish'){
+    const hasBk=builds.some(b=>b.type==='barracks'&&(b.team||0)===0);
+    const allies=enemies.filter(e=>!e.dead&&(e.team??1)===0).length;
+    if(!hasBk){ g.style.display='block'; g.innerHTML='① <b>병영</b>(핫바 맨 끝)을 짓고 경제를 돌리세요 — 구리 60마다 병사 훈련'; }
+    else if(allies<4){ g.style.display='block'; g.innerHTML='② 병사가 모이는 중 — 드릴·컨베이어로 경제를 키우면 훈련이 빨라집니다'; }
+    else if(allyMode==='defend'){ g.style.display='block'; g.innerHTML='③ 병력이 모이면 <b>⚔ 진군</b> — 적 드릴을 부수면 적 경제가 마릅니다'; }
+    else if(noAmmo>0){ g.style.display='block'; g.innerHTML=`⚠ <b>탄약 없는 포탑 ${noAmmo}개</b>`; }
+    else g.style.display='none';
+    if(selPos) refreshPanel();
+    document.getElementById('wvnext').textContent='';
+    return;
+  }
   if(wave===0){
     const drills=builds.filter(b=>b.type==='drill').length;
     const belts=builds.filter(b=>b.type==='conveyor').length;
@@ -1211,14 +1460,24 @@ function updateHUD(){
 function endGame(win){
   gameOver=true;
   sfx(win?'win':'lose');
+  document.getElementById('over').style.display='flex';
+  document.getElementById('overttl').style.color = win?'#ffd37f':'#e84438';
+  if(mode==='skirmish'){
+    const tie=skirmishT>=SKIRMISH_LIMIT;
+    document.getElementById('overttl').textContent = win?(tie?'판정승!':'승리 — 적 코어 파괴!'):(tie?'판정패':'코어 파괴됨');
+    document.getElementById('oversub').textContent = 'CORE DUEL';
+    document.getElementById('overstat').innerHTML=
+      `처치 <b>${kills}</b> · ${Math.floor(skirmishT/60)}분 ${Math.floor(skirmishT%60)}초`+
+      `<br>내 코어 <b>${Math.max(0,Math.ceil(core.hp))}</b> · 적 코어 <b>${Math.max(0,Math.ceil(core2.hp))}</b>`;
+    document.getElementById('contbtn').style.display='none';
+    return;
+  }
   const prev=loadBest();
   const isNew=!prev || wave>prev.wave || (wave===prev.wave && kills>prev.kills);
   saveBest();
   const best=loadBest();
   if(netMode==='host') sendNet(makeSnap());
-  document.getElementById('over').style.display='flex';
   document.getElementById('overttl').textContent = win?'승리!':'코어 파괴됨';
-  document.getElementById('overttl').style.color = win?'#ffd37f':'#e84438';
   document.getElementById('oversub').textContent = win?'ALL WAVES CLEARED':'THE CORE HAS FALLEN';
   document.getElementById('overstat').innerHTML=
     `도달 웨이브 <b>${wave}</b> · 처치 <b>${kills}</b>`+
@@ -1415,7 +1674,11 @@ function render(){
   }
   // 코어 라벨
   ctx.font='bold 10px sans-serif'; ctx.fillStyle='rgba(255,211,127,0.85)';
-  ctx.fillText('🏰 코어 사수!', core.x*TILE-6, core.y*TILE-8);
+  ctx.fillText(mode==='skirmish'?'🏰 내 코어':'🏰 코어 사수!', core.x*TILE-6, core.y*TILE-8);
+  if(mode==='skirmish' && core2){
+    ctx.fillStyle='rgba(255,120,96,0.9)';
+    ctx.fillText('☠ 적 코어', core2.x*TILE-6, core2.y*TILE-8);
+  }
   ctx.restore();
   // 비네트
   if(ctx.createRadialGradient && (!render.vg || render.vgW!==cv.width || render.vgH!==cv.height)){
@@ -1451,21 +1714,22 @@ function drawBuild(b){
   const base = b===core ? '#3a3a44' : '#3a3a44';
   ctx.fillStyle=base;
   ctx.fillRect(px+1,py+1,w-2,h-2);
-  ctx.strokeStyle=b.flash>0?`rgba(255,255,255,${b.flash})`:'#55555f';
+  ctx.strokeStyle=b.flash>0?`rgba(255,255,255,${b.flash})`:(b.team===1?'#7a3a32':'#55555f');
   ctx.lineWidth=1.5;
   ctx.strokeRect(px+1,py+1,w-2,h-2);
   const cx=px+w/2, cy=py+h/2;
   if(b.type==='core'){
-    ctx.strokeStyle=`rgba(255,211,127,${0.3+0.15*Math.sin(performance.now()/280)})`;
+    const tc = b.team===1 ? '#ff8a70' : TEAM;
+    ctx.strokeStyle= b.team===1 ? `rgba(232,80,60,${0.35+0.15*Math.sin(performance.now()/280)})` : `rgba(255,211,127,${0.3+0.15*Math.sin(performance.now()/280)})`;
     ctx.lineWidth=2; ctx.strokeRect(px-1.5,py-1.5,w+3,h+3);
-    ctx.fillStyle=TEAM;
+    ctx.fillStyle=tc;
     ctx.fillRect(px+6,py+6,w-12,h-12);
     ctx.fillStyle='#1a1a10';
     ctx.beginPath(); ctx.arc(cx,cy,7,0,7); ctx.fill();
     ctx.save(); ctx.translate(cx,cy); ctx.rotate(b.rot);
-    ctx.fillStyle=TEAM; ctx.fillRect(0,-2.5,13,5);
+    ctx.fillStyle=tc; ctx.fillRect(0,-2.5,13,5);
     ctx.restore();
-    ctx.fillStyle=TEAM;
+    ctx.fillStyle=tc;
     ctx.beginPath(); ctx.arc(cx,cy,3.4,0,7); ctx.fill();
   } else if(b.type==='wall'){
     ctx.fillStyle='#8a8a92';
@@ -1489,6 +1753,16 @@ function drawBuild(b){
       ctx.fillRect(ix-3.2,-3.2,6.4,6.4); ctx.strokeRect(ix-3.2,-3.2,6.4,6.4);
     }
     ctx.restore();
+  } else if(b.type==='barracks'){
+    ctx.fillStyle='#3d3a4a'; ctx.fillRect(px+2,py+2,w-4,h-4);
+    ctx.strokeStyle='#5a5570'; ctx.lineWidth=1.5; ctx.strokeRect(px+3,py+3,w-6,h-6);
+    ctx.fillStyle= b.team===1?'#ff8a70':'#ffd37f';
+    ctx.beginPath(); ctx.arc(cx,cy-1.5,4.2,Math.PI,0); ctx.fill();
+    ctx.fillRect(cx-4.2,cy-1.5,8.4,3.2);
+    if((b.team||0)===0){
+      ctx.fillStyle='#111'; ctx.fillRect(px+2,py+h-4,w-4,2.5);
+      ctx.fillStyle='#8fe07a'; ctx.fillRect(px+2,py+h-4,(w-4)*Math.min(1,(b.trainT||0)/TRAIN_TIME),2.5);
+    }
   } else if(b.type==='junction'){
     ctx.fillStyle='#2b2b33'; ctx.fillRect(px+2,py+2,w-4,h-4);
     // 교차 레인 두 줄
@@ -1600,8 +1874,8 @@ function drawBuild(b){
       ctx.fillStyle='#ff5a48'; ctx.font='bold 11px sans-serif'; ctx.fillText('탄약!',px+1,py-1);
     }
   }
-  // 드릴 버퍼 (꽉 차면 멈춤 표시)
-  if(b.type==='drill' && b.buf && b.buf.length>=6 && Math.floor(performance.now()/500)%2){
+  // 드릴 버퍼 (꽉 차면 멈춤 표시 — 아군만)
+  if(b.type==='drill' && (b.team||0)===0 && b.buf && b.buf.length>=6 && Math.floor(performance.now()/500)%2){
     ctx.fillStyle='#ffd37f'; ctx.font='bold 10px sans-serif'; ctx.fillText('막힘!',px+1,py-1);
   }
   // 전력 부족 표시
@@ -1617,7 +1891,10 @@ function drawEnemy(e){
   }
   if(e.air){ ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.arc(3,5,e.r*0.8,0,7); ctx.fill(); }
   ctx.rotate(e.rot+Math.PI/2);
-  ctx.fillStyle=ENEMY; ctx.strokeStyle='#8f2018'; ctx.lineWidth=1.2;
+  const team=e.team??1;
+  ctx.fillStyle= team===0 ? '#ffd37f' : ENEMY;
+  ctx.strokeStyle= team===0 ? '#8f6a20' : '#8f2018';
+  ctx.lineWidth=1.2;
   const r=e.r;
   if(e.type==='crawler'){
     ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.fill(); ctx.stroke();
@@ -1646,7 +1923,7 @@ function drawEnemy(e){
   ctx.restore();
   if(e.hp<e.maxhp){
     ctx.fillStyle='#111'; ctx.fillRect(e.x-9,e.y-e.r-7,18,3);
-    ctx.fillStyle='#e84438'; ctx.fillRect(e.x-9,e.y-e.r-7,18*Math.max(0,e.hp/e.maxhp),3);
+    ctx.fillStyle=(e.team??1)===0?'#7ae06a':'#e84438'; ctx.fillRect(e.x-9,e.y-e.r-7,18*Math.max(0,e.hp/e.maxhp),3);
   }
 }
 
@@ -1684,7 +1961,7 @@ cv.addEventListener('mousedown',ev=>{
     closePanel();
   } else if(mouse.in){
     const t=tileAt(mouse.tx,mouse.ty);
-    if(t && t.b && TURRETS.has(t.b.type)) openPanel(t.b, ev.clientX, ev.clientY);
+    if(t && t.b && TURRETS.has(t.b.type) && (t.b.team||0)===0) openPanel(t.b, ev.clientX, ev.clientY);
     else closePanel();
   }
 });
@@ -1727,7 +2004,7 @@ cv.addEventListener('contextmenu',ev=>{
   if(!started||gameOver) return;
   if(selected){ selected=null; return; }
   const t=tileAt(mouse.tx,mouse.ty);
-  if(t && t.b && t.b!==core){
+  if(t && t.b && t.b!==core && t.b!==core2 && (t.b.team||0)===0){
     if(netMode==='guest') sendNet({t:'cmd',a:'sell',x:mouse.tx,y:mouse.ty});
     else destroy(t.b,true);
   }
@@ -1796,6 +2073,12 @@ function drawBuildIcon(c,b){
     c.strokeStyle='#6a5548'; c.lineWidth=1.5; c.strokeRect(px+3,py+3,w-6,h-6);
     c.fillStyle='#ff9a3c'; c.fillRect(cx-5,cy-4,10,8);
     c.fillStyle='#ffd94f'; c.fillRect(cx-2.5,cy-2,5,4);
+  } else if(b.type==='barracks'){
+    c.fillStyle='#3d3a4a'; c.fillRect(px+3,py+3,w-6,h-6);
+    c.strokeStyle='#5a5570'; c.lineWidth=1.5; c.strokeRect(px+3,py+3,w-6,h-6);
+    c.fillStyle='#ffd37f';
+    c.beginPath(); c.arc(cx,cy-1.5,4.5,Math.PI,0); c.fill();
+    c.fillRect(cx-4.5,cy-1.5,9,3.5);
   } else if(b.type==='siliconer'){
     c.fillStyle='#3c4046'; c.fillRect(px+3,py+3,w-6,h-6);
     c.strokeStyle='#5a626e'; c.lineWidth=1.5; c.strokeRect(px+3,py+3,w-6,h-6);
@@ -1825,6 +2108,14 @@ function drawBuildIcon(c,b){
 }
 
 document.getElementById('wavebtn').onclick=()=>{
+  if(mode==='skirmish'){ // 병사 전역 명령 토글
+    allyMode = allyMode==='attack' ? 'defend' : 'attack';
+    for(const e of enemies) if(!e.dead&&(e.team??1)===0) e.mode=allyMode;
+    document.getElementById('wavebtn').textContent = allyMode==='attack' ? '🛡 귀환' : '⚔ 진군';
+    banner(allyMode==='attack' ? '⚔ 전군 진군!' : '🛡 전군 귀환');
+    sfx('wave');
+    return;
+  }
   if(netMode==='guest'){ if(!inWave) sendNet({t:'cmd',a:'wave'}); return; }
   if(!inWave){ copper+=15; startWave(); }
 };
@@ -1855,9 +2146,22 @@ document.getElementById('startbtn').onclick=()=>{
   document.getElementById('hud').style.display='block';
   started=true;
 };
+document.getElementById('skirmishbtn').onclick=()=>{
+  if(ws) return; // 협동 대기 중엔 불가
+  audioInit(); if(AC && AC.state==='suspended') AC.resume();
+  mode='skirmish';
+  copper=420; // 병영+초기 경제 자금
+  genMapSkirmish();
+  document.getElementById('start').style.display='none';
+  document.getElementById('hud').style.display='block';
+  document.getElementById('wavebtn').textContent='⚔ 진군';
+  started=true;
+  banner('⚔ 적 코어를 파괴하라!');
+};
 if(new URLSearchParams(location.search).get('room')){
   document.getElementById('startbtn').textContent='🤝 협동 참가';
   document.getElementById('coopbtn').style.display='none';
+  document.getElementById('skirmishbtn').style.display='none';
 }
 
 /* ══════════════ 멀티플레이 (호스트 권위 + DO 릴레이) ══════════════ */

@@ -181,11 +181,16 @@ const DEFS = {
   junction: { name:'정션',     cost:5,   hp:60,  desc:'컨베이어 교차로 — 벨트가 서로 통과 (컨베이어를 가로질러 놓으면 자동 생성)' },
   node:     { name:'노드',     cost:20,  hp:70,  range:108, desc:'전력망 — 노드끼리 연결되고 반경 내 건물에 급전' },
   generator:{ name:'발전기',   cost:80,  hp:150, range:60, desc:'석탄을 태워 6⚡ 생산 — 반경 2.5칸 자가 급전, 멀리는 노드로 송전' },
-  barracks: { name:'병영',     cost:200, hp:280, desc:'구리 60으로 병사 자동 훈련 — ⚔ 스커미시 전용' },
+  barracks: { name:'병영',     cost:200, hp:280, desc:'병사 자동 훈련(구리 60) — 벨트로 합금=중장병 / 실리콘=유도병. ⚔ 스커미시 전용' },
 };
-/* 스커미시 (1:1 코어 듀얼) */
-const SOLDIER = { hp:95, spd:40, dmg:12, reload:0.8, r:7, reward:5, atkRange:65 };
-const TRAIN_COST = 60, ARMY_CAP = 30, TRAIN_TIME = 4;
+/* 스커미시 (1:1 코어 듀얼) — 병영에 배달된 자원이 병종을 결정 */
+const UNITS = {
+  soldier: { hp:95,  spd:40, dmg:12, reload:0.8,  r:7, reward:5,  atkRange:65 },
+  heavy:   { hp:330, spd:25, dmg:27, reload:1.1,  r:10,reward:14, atkRange:55 },              // 합금 1 + 구리 40
+  seeker:  { hp:75,  spd:44, dmg:9,  reload:0.55, r:6, reward:8,  atkRange:95, homingShot:true }, // 실리콘 1 + 구리 40
+};
+const SOLDIER = UNITS.soldier;
+const TRAIN_COST = 60, TRAIN_COST_ADV = 40, ARMY_CAP = 30, AI_ARMY_CAP = 22, TRAIN_TIME = 4;
 const SKIRMISH_LIMIT = 12*60;      // 초 — 넘기면 코어 HP 비율 판정
 const AI_RALLY = 8, AI_RALLY_LATE = 4; // 집결 최소 병력 (NEXT NATION식)
 const ENAMES = { dagger:'대거', crawler:'크롤러', fortress:'포트리스', flier:'플라이어', boss:'⚠보스' };
@@ -343,7 +348,7 @@ let flow2 = null;        // 흐름장 (적 코어까지 거리 — 스커미시)
 let core = null, core2 = null;
 let mode = 'td';         // 'td' | 'skirmish'
 let allyMode = 'defend'; // 아군 병사 전역 명령
-let skirmishT = 0, aiGold = 300, aiTickT = 0, aiMode = 'build', aiSpots = null;
+let skirmishT = 0, aiGold = 300, aiTickT = 0, aiMode = 'build', aiSpots = null, aiTrainN = 0;
 let copper = 220, wave = 0, waveTimer = 38, inWave = false, spawnQueue = [];
 let selected = null;     // 선택한 건설 타입
 let ghostRot = 0;        // 컨베이어 설치 방향 (0우 1하 2좌 3상)
@@ -587,7 +592,7 @@ function genMapSkirmish(){
   aiSpots={turrets:[],barracks:null,drills:0};
   for(const [ox,oy] of [[-2,-2],[-2,3],[2,-2],[2,3]]){
     const x=core2.x+ox, y=core2.y+oy;
-    if(mkAI('duo',x,y,{ammo:1e9,ammoKind:'c'})) aiSpots.turrets.push({x,y});
+    if(mkAI('duo',x,y,{ammo:30,ammoKind:'c'})) aiSpots.turrets.push({x,y}); // 유한 탄약 — 보급은 AI 골드
   }
   const bx=core2.x-3, by=core2.y+1;
   tileAt(bx,by).ore=null;
@@ -597,7 +602,7 @@ function genMapSkirmish(){
     const t=tileAt(x,y);
     if(t&&t.ore&&!t.b&&!t.rock){ if(mkAI('drill',x,y,{buf:[],outDir:0,oreKind:t.ore,mineT:0})) dCount++; }
   }
-  skirmishT=0; aiGold=300; aiTickT=0; aiMode='build'; allyMode='defend';
+  skirmishT=0; aiGold=150; aiTickT=0; aiMode='build'; aiTrainN=0; allyMode='defend';
   computeFlow(); renderFloor();
 }
 /* 적 코어 흐름장 */
@@ -836,7 +841,7 @@ function place(type,x,y){
   if(type==='router'){ b.buf=[]; b.outDir=0; }
   if(RECIPES[type]){ b.inv={}; b.craftT=0; b.out=[]; b.outDir=0; }
   if(type==='generator'){ b.fuel=0; b.burnT=0; }
-  if(type==='barracks'){ b.trainT=0; }
+  if(type==='barracks'){ b.trainT=0; b.inv={}; }
   if(TURRETS.has(type)||type==='mender'){ b.ammo=10; b.ammoKind=Object.keys(AMMO_TYPES[type])[0]; } // 건설 시 기본 탄약 약간
   builds.push(b); map[y][x].b=b;
   computeFlow();
@@ -884,20 +889,22 @@ function spawnEnemy(type, sp){
 }
 
 /* ══════════════ 스커미시: 병사·병영·적 AI ══════════════ */
-function spawnSoldier(team,tx,ty){
-  enemies.push({ type:'soldier', ...structuredClone(SOLDIER), maxhp:SOLDIER.hp,
+function spawnSoldier(team,tx,ty,kind){
+  kind=kind||'soldier';
+  const d=UNITS[kind];
+  enemies.push({ type:kind, ...structuredClone(d), maxhp:d.hp,
     x:tx*TILE+12+rnd(-6,6), y:ty*TILE+12+rnd(-6,6), rot:team===0?0:Math.PI,
     cd:rnd(0,0.5), target:null, team,
     mode: team===0 ? allyMode : (aiMode==='attack'?'attack':'defend') });
   puff(tx*TILE+12,ty*TILE+12,team===0?'#ffd37f':'#ff8a70',4);
 }
-function trainAt(b,team){
+function trainAt(b,team,kind){
   // 병영 주변(인접 우선, 최대 5×5) 빈 바닥에 스폰
   for(let r=1;r<=2;r++){
     for(let dy=-r;dy<=r;dy++) for(let dx=-r;dx<=r;dx++){
       if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
       const t=tileAt(b.x+dx,b.y+dy);
-      if(t && !t.rock && !t.b){ spawnSoldier(team,b.x+dx,b.y+dy); return true; }
+      if(t && !t.rock && !t.b){ spawnSoldier(team,b.x+dx,b.y+dy,kind); return true; }
     }
   }
   return false;
@@ -908,7 +915,12 @@ function updateBarracks(b,dt){
   if(b.trainT<TRAIN_TIME) return;
   b.trainT=0;
   const allies=enemies.filter(e=>!e.dead&&(e.team??1)===0).length;
-  if(copper>=TRAIN_COST && allies<ARMY_CAP && trainAt(b,0)){ copper-=TRAIN_COST; sfx('build'); }
+  if(allies>=ARMY_CAP) return;
+  // 배달된 자원 우선: 합금→중장병, 실리콘→유도병, 없으면 구리→기본 병사
+  const inv=b.inv||(b.inv={});
+  if(inv.a>0 && copper>=TRAIN_COST_ADV){ if(trainAt(b,0,'heavy')){ inv.a--; copper-=TRAIN_COST_ADV; sfx('up'); } }
+  else if(inv.i>0 && copper>=TRAIN_COST_ADV){ if(trainAt(b,0,'seeker')){ inv.i--; copper-=TRAIN_COST_ADV; sfx('up'); } }
+  else if(copper>=TRAIN_COST){ if(trainAt(b,0,'soldier')){ copper-=TRAIN_COST; sfx('build'); } }
 }
 function aiBuild(type,x,y,extra){
   const t=tileAt(x,y); if(!t||t.b||t.rock) return null;
@@ -921,15 +933,20 @@ function aiBuild(type,x,y,extra){
 /* NEXT NATION식 매크로: 경제 틱 → 훈련 → 재건 → 집결 공격/회군 판단 */
 function aiTick(){
   const aiDrills=builds.filter(b=>b.team===1&&b.type==='drill').length;
-  aiGold += 14 + 4*aiDrills; // 2초당 수입 — 드릴 파괴 = 적 경제 타격
+  aiGold += 12 + 3*aiDrills; // 2초당 수입 — 드릴 파괴 = 적 경제 타격
   const aiArmy=enemies.filter(e=>!e.dead&&(e.team??1)===1).length;
   const bkT=aiSpots.barracks && tileAt(aiSpots.barracks.x,aiSpots.barracks.y);
   const bk=bkT && bkT.b && bkT.b.type==='barracks' ? bkT.b : null;
-  if(bk && aiArmy<ARMY_CAP && aiGold>=TRAIN_COST+10){ if(trainAt(bk,1)) aiGold-=TRAIN_COST; }
-  // 파괴된 포탑·병영 재건
+  aiTrainN++;
+  if(bk && aiArmy<AI_ARMY_CAP && aiGold>=TRAIN_COST+10 && aiTrainN%2===0){ // 4초 주기 — 플레이어와 동일, 상한은 낮게(운영 핸디캡)
+    const kind = (skirmishT>240 && aiTrainN%6===0) ? 'heavy' : 'soldier';
+    if(trainAt(bk,1,kind)) aiGold-=TRAIN_COST;
+  }
+  // 포탑 보급·재건 — 골드 소모: 적 경제를 말리면 포탑도 마른다
   for(const s of aiSpots.turrets){
     const t=tileAt(s.x,s.y);
-    if(t && !t.b && aiGold>=120){ if(aiBuild('duo',s.x,s.y,{ammo:1e9,ammoKind:'c'})) aiGold-=120; }
+    if(t && !t.b && aiGold>=120){ if(aiBuild('duo',s.x,s.y,{ammo:30,ammoKind:'c'})) aiGold-=120; continue; }
+    if(t && t.b && t.b.type==='duo' && t.b.team===1 && t.b.ammo<24 && aiGold>=4){ t.b.ammo=Math.min(30,t.b.ammo+6); aiGold-=4; }
   }
   if(!bk && aiSpots.barracks && aiGold>=260){
     if(aiBuild('barracks',aiSpots.barracks.x,aiSpots.barracks.y,{trainT:0})) aiGold-=260;
@@ -938,7 +955,7 @@ function aiTick(){
   const threat=enemies.some(e=>!e.dead&&(e.team??1)===0 && dist2(e.x,e.y,(core2.x+1)*TILE,(core2.y+1)*TILE)<(TILE*10)**2);
   const rally = skirmishT>SKIRMISH_LIMIT*0.6 ? AI_RALLY_LATE : AI_RALLY;
   if(threat) aiMode='defend';
-  else if(aiArmy>=rally) aiMode='attack';
+  else if(aiArmy>=rally && skirmishT>90) aiMode='attack'; // 개전 유예 90초 — 양쪽 다 경제 깔 시간
   else if(aiArmy<=2) aiMode='defend';
   for(const e of enemies) if(!e.dead&&(e.team??1)===1&&e.type==='soldier') e.mode = aiMode==='attack'?'attack':'defend';
 }
@@ -982,21 +999,40 @@ function updateEnemy(e,dt){
     else { e.cd-=dt; if(e.cd<=0){ e.cd=e.reload; ebullet(e,foeCore); } }
     return;
   }
-  // ── 교전: 사거리 안팎의 상대 유닛 우선 ──
+  // ── 교전: 사거리 안팎의 상대 유닛 우선 (수비 중엔 경계 반경을 넓게) ──
   if(mode==='skirmish'){
     const engage=e.atkRange||55;
+    const seek = e.mode==='defend' ? TILE*7.5 : engage*1.6;
+    const guard = e.mode==='defend' && homeCore ? (TILE*9)**2 : Infinity; // 수비: 본진 근처 적만 (무한 추격 방지)
     let foeU=null, fd=1e18;
     for(const o of enemies){
       if(o.dead || (o.team??1)===team) continue;
+      if(guard!==Infinity && dist2(o.x,o.y,(homeCore.x+1)*TILE,(homeCore.y+1)*TILE)>guard) continue;
       const dd=dist2(e.x,e.y,o.x,o.y);
       if(dd<fd){ fd=dd; foeU=o; }
     }
-    if(foeU && fd<(engage*1.6)**2){
+    if(foeU && fd<seek*seek){
       e.rot=Math.atan2(foeU.y-e.y,foeU.x-e.x);
       if(fd>engage*engage){ e.x+=Math.cos(e.rot)*speed*dt; e.y+=Math.sin(e.rot)*speed*dt; }
       else { e.cd-=dt; if(e.cd<=0){ e.cd=e.reload;
-        bullets.push({x:e.x,y:e.y,a:e.rot,spd:300,dmg:e.dmg,life:engage/300+0.15,c:team===0?'#ffe4a8':'#ff6a5a',r:2.2,team}); } }
+        bullets.push({x:e.x,y:e.y,a:e.rot,spd:300,dmg:e.dmg,life:engage/300+(e.homingShot?0.4:0.15),c:team===0?'#ffe4a8':'#ff6a5a',r:2.2,team,homing:e.homingShot}); } }
       return;
+    }
+    // 사거리 내 상대 건물 → 정지 사격 (코어 직행 자살 돌격 방지 — 기지를 뚫으며 전진)
+    if(e.mode!=='defend'){
+      const foeTeam = team===1 ? 0 : 1;
+      let foeB=null, bd2=(engage*1.35)**2;
+      for(const b of builds){
+        if((b.team||0)!==foeTeam) continue;
+        const bx2=(b.x+b.w/2)*TILE, by2=(b.y+b.h/2)*TILE;
+        const dd=dist2(e.x,e.y,bx2,by2);
+        if(dd<bd2){ bd2=dd; foeB=b; }
+      }
+      if(foeB && foeB!==foeCore){
+        e.rot=Math.atan2((foeB.y+foeB.h/2)*TILE-e.y,(foeB.x+foeB.w/2)*TILE-e.x);
+        e.cd-=dt; if(e.cd<=0){ e.cd=e.reload; ebullet(e,foeB); }
+        return;
+      }
     }
     // ── 회군(방어) 모드: 자기 코어 곁으로 ──
     if(e.mode==='defend' && homeCore){
@@ -1098,6 +1134,11 @@ function deliverTo(nb,nx,ny,kind,dir){
   if(nb.type==='generator'){
     if(kind!=='k' || nb.fuel>=GEN_FUEL_MAX) return false;
     nb.fuel++; return true;
+  }
+  if(nb.type==='barracks'){
+    if((nb.team||0)!==0) return false;
+    if((kind==='a'||kind==='i') && ((nb.inv=nb.inv||{})[kind]||0)<3){ nb.inv[kind]=(nb.inv[kind]||0)+1; return true; }
+    return false;
   }
   if(TURRETS.has(nb.type)||nb.type==='mender'){
     const types=AMMO_TYPES[nb.type];
@@ -1427,7 +1468,7 @@ function updateHUD(){
     const allies=enemies.filter(e=>!e.dead&&(e.team??1)===0).length;
     if(!hasBk){ g.style.display='block'; g.innerHTML='① <b>병영</b>(핫바 맨 끝)을 짓고 경제를 돌리세요 — 구리 60마다 병사 훈련'; }
     else if(allies<4){ g.style.display='block'; g.innerHTML='② 병사가 모이는 중 — 드릴·컨베이어로 경제를 키우면 훈련이 빨라집니다'; }
-    else if(allyMode==='defend'){ g.style.display='block'; g.innerHTML='③ 병력이 모이면 <b>⚔ 진군</b> — 적 드릴을 부수면 적 경제가 마릅니다'; }
+    else if(allyMode==='defend'){ g.style.display='block'; g.innerHTML='③ 병력이 모이면 <b>⚔ 진군</b> — 벨트로 <b>합금=중장병</b>·<b>실리콘=유도병</b>을 병영에 꽂을 수 있습니다'; }
     else if(noAmmo>0){ g.style.display='block'; g.innerHTML=`⚠ <b>탄약 없는 포탑 ${noAmmo}개</b>`; }
     else g.style.display='none';
     if(selPos) refreshPanel();
@@ -1762,6 +1803,12 @@ function drawBuild(b){
     if((b.team||0)===0){
       ctx.fillStyle='#111'; ctx.fillRect(px+2,py+h-4,w-4,2.5);
       ctx.fillStyle='#8fe07a'; ctx.fillRect(px+2,py+h-4,(w-4)*Math.min(1,(b.trainT||0)/TRAIN_TIME),2.5);
+      if(b.inv){
+        ctx.fillStyle=KIND_COL.a[0];
+        for(let i=0;i<(b.inv.a||0);i++) ctx.fillRect(px+3,py+4+i*4,3,3);
+        ctx.fillStyle=KIND_COL.i[0];
+        for(let i=0;i<(b.inv.i||0);i++) ctx.fillRect(px+w-6,py+4+i*4,3,3);
+      }
     }
   } else if(b.type==='junction'){
     ctx.fillStyle='#2b2b33'; ctx.fillRect(px+2,py+2,w-4,h-4);
@@ -1899,7 +1946,7 @@ function drawEnemy(e){
   if(e.type==='crawler'){
     ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.fill(); ctx.stroke();
     ctx.fillStyle='#ffb08a'; ctx.beginPath(); ctx.arc(0,-r*0.3,r*0.4,0,7); ctx.fill();
-  } else if(e.type==='fortress'||e.type==='boss'){
+  } else if(e.type==='fortress'||e.type==='boss'||e.type==='heavy'){
     ctx.beginPath();
     ctx.moveTo(0,-r); ctx.lineTo(r*0.9,-r*0.2); ctx.lineTo(r*0.65,r); ctx.lineTo(-r*0.65,r); ctx.lineTo(-r*0.9,-r*0.2);
     ctx.closePath(); ctx.fill(); ctx.stroke();
@@ -1911,7 +1958,7 @@ function drawEnemy(e){
       ctx.fillStyle='#ffb08a';
       ctx.beginPath(); ctx.arc(0,0,r*0.22,0,7); ctx.fill();
     }
-  } else if(e.type==='flier'){
+  } else if(e.type==='flier'||e.type==='seeker'){
     ctx.beginPath();
     ctx.moveTo(0,-r*1.2); ctx.lineTo(r,r*0.6); ctx.lineTo(0,r*0.15); ctx.lineTo(-r,r*0.6);
     ctx.closePath(); ctx.fill(); ctx.stroke();
@@ -2150,7 +2197,7 @@ document.getElementById('skirmishbtn').onclick=()=>{
   if(ws) return; // 협동 대기 중엔 불가
   audioInit(); if(AC && AC.state==='suspended') AC.resume();
   mode='skirmish';
-  copper=420; // 병영+초기 경제 자금
+  copper=520; // 병영+초기 경제 자금 (NEXT NATION 초기 500골드 오마주)
   genMapSkirmish();
   document.getElementById('start').style.display='none';
   document.getElementById('hud').style.display='block';

@@ -84,18 +84,22 @@ try{
   mode='skirmish'; gameOver=false; endless=false; copper=3000; kills=0;
   genMapSkirmish();
   started=true;
-  // 아군 병영 + 진군 명령
-  let bkPlaced=false;
+  // 아군 병영 + 진군 명령 (+ 병종 스폰 계측)
+  const spawned={};
+  const _ss=spawnSoldier;
+  spawnSoldier=(t,x,y,k)=>{ spawned[(t===0?'ally_':'ai_')+(k||'soldier')]=(spawned[(t===0?'ally_':'ai_')+(k||'soldier')]||0)+1; _ss(t,x,y,k); };
+  let bkPlaced=false, bkRef=null;
   outer: for(let y=core.y-3;y<=core.y+4;y++) for(let x=core.x+2;x<=core.x+8;x++){
-    if(canPlace('barracks',x,y)){ place('barracks',x,y); bkPlaced=true; break outer; }
+    if(canPlace('barracks',x,y)){ place('barracks',x,y); bkPlaced=true; bkRef=map[y][x].b; break outer; }
   }
+  if(bkRef) bkRef.inv={a:3,i:3}; // 합금·실리콘 배달 가정 → 중장병·유도병 훈련 검증
   allyMode='attack';
   let crashed2=null;
   try{ for(let i=1;i<=7200;i++) tick(1e6+i*50); } // 360초
   catch(e){ crashed2=String(e.stack).split('\n').slice(0,4); }
   const allies=enemies.filter(e=>!e.dead&&(e.team||1)===0).length;
   const foes=enemies.filter(e=>!e.dead&&(e.team||1)===1).length;
-  sk={ bkPlaced, crashed2,
+  sk={ bkPlaced, crashed2, spawned,
     flow2Ok: flow2 && flow2[core.y][core.x+2]!==Infinity,
     alliesAlive:allies, foesAlive:foes, kills,
     myCore:Math.ceil(core.hp), aiCore:Math.ceil(core2.hp), aiGold:Math.floor(aiGold),

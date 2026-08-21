@@ -109,6 +109,16 @@
     </div>
   </div>
   <div id="hotbar"></div>
+  <canvas id="mini" style="position:absolute;right:12px;bottom:96px;border:1px solid #45454f;border-radius:6px;background:#0b0b10;pointer-events:auto;cursor:pointer;image-rendering:pixelated;width:192px;height:120px"></canvas>
+  <div id="score" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);width:360px;display:none;pointer-events:none">
+    <div style="display:flex;gap:7px;align-items:center;justify-content:center;font-size:12px;color:#e8e4d8;text-shadow:0 1px 3px #000">
+      <span>🏰</span>
+      <div style="flex:1;height:13px;background:rgba(20,20,26,0.8);border:1px solid #45454f;border-radius:7px;overflow:hidden"><div id="myhp" style="height:100%;width:100%;background:#ffd37f"></div></div>
+      <span style="color:#8a8a7a;font-weight:bold">VS</span>
+      <div style="flex:1;height:13px;background:rgba(20,20,26,0.8);border:1px solid #45454f;border-radius:7px;overflow:hidden;display:flex;justify-content:flex-end"><div id="aihp" style="height:100%;width:100%;background:#e85a48"></div></div>
+      <span>☠</span>
+    </div>
+  </div>
   <div id="guide"></div>
   <div id="tip">클릭·드래그: 건설 · R: 회전 · 우클릭: 판매 · 1~0: 선택 · 휠: 줌 · WASD/휠클릭: 이동 · Space: 일시정지</div>
   <div id="banner"></div>
@@ -181,7 +191,7 @@ const DEFS = {
   junction: { name:'정션',     cost:5,   hp:60,  desc:'컨베이어 교차로 — 벨트가 서로 통과 (컨베이어를 가로질러 놓으면 자동 생성)' },
   node:     { name:'노드',     cost:20,  hp:70,  range:108, desc:'전력망 — 노드끼리 연결되고 반경 내 건물에 급전' },
   generator:{ name:'발전기',   cost:80,  hp:150, range:60, desc:'석탄을 태워 6⚡ 생산 — 반경 2.5칸 자가 급전, 멀리는 노드로 송전' },
-  barracks: { name:'병영',     cost:200, hp:280, desc:'병사 자동 훈련(구리 60) — 벨트로 합금=중장병 / 실리콘=유도병. ⚔ 스커미시 전용' },
+  barracks: { name:'병영',     cost:200, hp:280, desc:'병사 자동 훈련(구리 50) — 벨트로 합금=중장병 / 실리콘=유도병. ⚔ 스커미시 전용' },
 };
 /* 스커미시 (1:1 코어 듀얼) — 병영에 배달된 자원이 병종을 결정 */
 const UNITS = {
@@ -190,8 +200,8 @@ const UNITS = {
   seeker:  { hp:75,  spd:44, dmg:9,  reload:0.55, r:6, reward:8,  atkRange:95, homingShot:true }, // 실리콘 1 + 구리 40
 };
 const SOLDIER = UNITS.soldier;
-const TRAIN_COST = 60, TRAIN_COST_ADV = 40, ARMY_CAP = 30, AI_ARMY_CAP = 22, TRAIN_TIME = 4;
-const SKIRMISH_LIMIT = 12*60;      // 초 — 넘기면 코어 HP 비율 판정
+const TRAIN_COST = 50, TRAIN_COST_ADV = 40, ARMY_CAP = 30, AI_ARMY_CAP = 22, TRAIN_TIME = 2.5;
+const SKIRMISH_LIMIT = 10*60;      // 초 — 넘기면 코어 HP 비율 판정
 const AI_RALLY = 8, AI_RALLY_LATE = 4; // 집결 최소 병력 (NEXT NATION식)
 const ENAMES = { dagger:'대거', crawler:'크롤러', fortress:'포트리스', flier:'플라이어', boss:'⚠보스' };
 const TIP_DEFAULT = '클릭·드래그: 건설 · R: 회전 · 우클릭: 판매 · 1~0: 선택 · 휠: 줌 · WASD/휠클릭: 이동 · Space: 일시정지';
@@ -348,7 +358,9 @@ let flow2 = null;        // 흐름장 (적 코어까지 거리 — 스커미시)
 let core = null, core2 = null;
 let mode = 'td';         // 'td' | 'skirmish'
 let allyMode = 'defend'; // 아군 병사 전역 명령
-let skirmishT = 0, aiGold = 300, aiTickT = 0, aiMode = 'build', aiSpots = null, aiTrainN = 0;
+let skirmishT = 0, aiGold = 150, aiTickT = 0, aiMode = 'build', aiSpots = null, aiTrainN = 0;
+let aiPush = {phase:'build', warnT:0, wave:0, rally:8};  // 예고된 공세 사이클
+let coreWarn = 0, prevAllies = 0;
 let copper = 220, wave = 0, waveTimer = 38, inWave = false, spawnQueue = [];
 let selected = null;     // 선택한 건설 타입
 let ghostRot = 0;        // 컨베이어 설치 방향 (0우 1하 2좌 3상)
@@ -603,6 +615,7 @@ function genMapSkirmish(){
     if(t&&t.ore&&!t.b&&!t.rock){ if(mkAI('drill',x,y,{buf:[],outDir:0,oreKind:t.ore,mineT:0})) dCount++; }
   }
   skirmishT=0; aiGold=150; aiTickT=0; aiMode='build'; aiTrainN=0; allyMode='defend';
+  aiPush={phase:'build', warnT:0, wave:0, rally:8}; coreWarn=0; prevAllies=0;
   computeFlow(); renderFloor();
 }
 /* 적 코어 흐름장 */
@@ -626,6 +639,7 @@ function computeFlow2(){
 
 /* ══════════════ 바닥 사전 렌더 (오프스크린 캔버스) ══════════════ */
 function renderFloor(){
+  buildMiniTerrain();
   floorCv=document.createElement('canvas');
   floorCv.width=WVW; floorCv.height=WVH;
   const c=floorCv.getContext('2d');
@@ -765,6 +779,52 @@ function updatePower(dt){
 }
 const powerSat=b=> netMode==='guest' ? (b.pwSnap!==undefined?b.pwSnap:1) : (b.pnet?b.pnet.sat:0);
 
+/* ══════════════ 미니맵 ══════════════ */
+let miniTerrain=null;
+function buildMiniTerrain(){
+  miniTerrain=document.createElement('canvas');
+  miniTerrain.width=MW*2; miniTerrain.height=MH*2;
+  const c=miniTerrain.getContext('2d'); if(!c || !c.fillRect) return;
+  for(let y=0;y<MH;y++) for(let x=0;x<MW;x++){
+    const t=map[y][x];
+    c.fillStyle = t.rock ? '#1c1c22' : (t.ore ? (KIND_COL[t.ore]||['#666'])[0] : '#3d372c');
+    c.fillRect(x*2,y*2,2,2);
+  }
+}
+function drawMinimap(){
+  const mc=document.getElementById('mini');
+  if(!mc || !mc.getContext) return;
+  if(mc.width!==MW*2){ mc.width=MW*2; mc.height=MH*2; }
+  const c=mc.getContext('2d'); if(!c || !c.fillRect) return;
+  c.fillStyle='#0b0b10'; c.fillRect(0,0,MW*2,MH*2);
+  if(miniTerrain) c.drawImage(miniTerrain,0,0);
+  for(const b of builds){
+    const foe=(b.team||0)===1;
+    if(b.type==='core'){
+      c.fillStyle= foe?'#ff5a48':'#ffd37f';
+      c.fillRect(b.x*2-1,b.y*2-1,b.w*2+2,b.h*2+2);
+    } else {
+      c.fillStyle= foe?'#b04438':'#b8a878';
+      c.fillRect(b.x*2,b.y*2,2,2);
+    }
+  }
+  for(const e of enemies){
+    if(e.dead) continue;
+    c.fillStyle=(e.team??1)===0?'#ffefb0':'#ff8672';
+    c.fillRect(Math.floor(e.x/TILE)*2-1,Math.floor(e.y/TILE)*2-1,3,3);
+  }
+  const vw=cv.width/scale/TILE*2, vh=cv.height/scale/TILE*2;
+  c.strokeStyle='rgba(255,255,255,0.6)'; c.lineWidth=1;
+  c.strokeRect(cam.x/TILE*2-vw/2, cam.y/TILE*2-vh/2, vw, vh);
+}
+if(typeof document!=='undefined' && document.getElementById('mini').addEventListener){
+  document.getElementById('mini').addEventListener('click',ev=>{
+    const mc=document.getElementById('mini'), r=mc.getBoundingClientRect();
+    cam.x=(ev.clientX-r.left)/r.width*WVW; cam.y=(ev.clientY-r.top)/r.height*WVH;
+    applyCam();
+  });
+}
+
 /* ══════════════ 흐름장 (BFS from core) ══════════════ */
 function computeFlow(){
   flow = Array.from({length:MH},()=>new Array(MW).fill(Infinity));
@@ -853,7 +913,15 @@ function destroy(b, refund){
   for(let yy=0;yy<MH;yy++) for(let xx=0;xx<MW;xx++) if(map[yy][xx].b===b) map[yy][xx].b=null;
   builds=builds.filter(o=>o!==b);
   if(refund){ copper+=Math.floor(DEFS[b.type].cost*0.5); sfx('sell'); }
-  else { puff(b.x*TILE+12,b.y*TILE+12,'#ff9a60',12); addShake(1.5); }
+  else {
+    puff(b.x*TILE+12,b.y*TILE+12,'#ff9a60',12); addShake(1.5);
+    if(b.team===1 && (b.type==='drill'||b.type==='generator'||b.type==='barracks')){
+      if(!destroy.lastRaid || performance.now()-destroy.lastRaid>3500){
+        destroy.lastRaid=performance.now();
+        banner(b.type==='barracks'?'💥 적 병영 파괴!':'💥 적 보급 시설 파괴 — 경제 타격!'); sfx('combo',0.8);
+      }
+    }
+  }
   computeFlow();
 }
 
@@ -933,13 +1001,14 @@ function aiBuild(type,x,y,extra){
 /* NEXT NATION식 매크로: 경제 틱 → 훈련 → 재건 → 집결 공격/회군 판단 */
 function aiTick(){
   const aiDrills=builds.filter(b=>b.team===1&&b.type==='drill').length;
-  aiGold += 12 + 3*aiDrills; // 2초당 수입 — 드릴 파괴 = 적 경제 타격
+  aiGold += 7 + 2*aiDrills; // 1.25초당 수입 — 드릴 파괴 = 적 경제 타격
   const aiArmy=enemies.filter(e=>!e.dead&&(e.team??1)===1).length;
   const bkT=aiSpots.barracks && tileAt(aiSpots.barracks.x,aiSpots.barracks.y);
   const bk=bkT && bkT.b && bkT.b.type==='barracks' ? bkT.b : null;
   aiTrainN++;
-  if(bk && aiArmy<AI_ARMY_CAP && aiGold>=TRAIN_COST+10 && aiTrainN%2===0){ // 4초 주기 — 플레이어와 동일, 상한은 낮게(운영 핸디캡)
-    const kind = (skirmishT>240 && aiTrainN%6===0) ? 'heavy' : 'soldier';
+  const buildCap = aiPush.phase==='build' ? Math.min(AI_ARMY_CAP, aiPush.rally+2) : AI_ARMY_CAP; // 공세 규모 = 회차별 에스컬레이션
+  if(bk && aiArmy<buildCap && aiGold>=TRAIN_COST+10 && aiTrainN%2===0){ // 2.5초 주기 — 플레이어와 동일, 상한은 낮게(운영 핸디캡)
+    const kind = (aiPush.rally>=12 && aiTrainN%8===0) ? 'heavy' : 'soldier';
     if(trainAt(bk,1,kind)) aiGold-=TRAIN_COST;
   }
   // 포탑 보급·재건 — 골드 소모: 적 경제를 말리면 포탑도 마른다
@@ -951,13 +1020,32 @@ function aiTick(){
   if(!bk && aiSpots.barracks && aiGold>=260){
     if(aiBuild('barracks',aiSpots.barracks.x,aiSpots.barracks.y,{trainT:0})) aiGold-=260;
   }
-  // 공격/방어: 본진 위협 시 회군, 집결 병력이 차면 진군 (후반엔 문턱 하향)
+  // ── 예고된 공세 사이클: 집결(방어) → ⚠ 예고 → 💥 돌격 → 격퇴되면 더 큰 다음 공세 ──
   const threat=enemies.some(e=>!e.dead&&(e.team??1)===0 && dist2(e.x,e.y,(core2.x+1)*TILE,(core2.y+1)*TILE)<(TILE*10)**2);
-  const rally = skirmishT>SKIRMISH_LIMIT*0.6 ? AI_RALLY_LATE : AI_RALLY;
-  if(threat) aiMode='defend';
-  else if(aiArmy>=rally && skirmishT>90) aiMode='attack'; // 개전 유예 90초 — 양쪽 다 경제 깔 시간
-  else if(aiArmy<=2) aiMode='defend';
-  for(const e of enemies) if(!e.dead&&(e.team??1)===1&&e.type==='soldier') e.mode = aiMode==='attack'?'attack':'defend';
+  if(threat && aiPush.phase!=='attack'){ aiMode='defend'; }
+  else if(aiPush.phase==='build'){
+    aiMode='defend';
+    if(aiArmy>=aiPush.rally && skirmishT>45){
+      aiPush.phase='warn'; aiPush.warnT=12;
+      banner('⚠ 적 공세 임박!'); sfx('wave');
+    }
+  } else if(aiPush.phase==='warn'){
+    aiMode='defend';
+    aiPush.warnT-=1.25;
+    if(aiPush.warnT<=0){
+      aiPush.phase='attack'; aiPush.wave++; aiMode='attack';
+      banner(`💥 적 ${aiPush.wave}차 공세!`); sfx('boss'); addShake(3);
+    }
+  } else if(aiPush.phase==='attack'){
+    aiMode='attack';
+    if(aiArmy<=3){ // 공세 소진 → 격퇴 판정, 다음 공세는 더 크게
+      aiPush.phase='build';
+      aiPush.rally=Math.min(AI_ARMY_CAP, aiPush.rally+4);
+      aiMode='defend';
+      banner('🛡 공세 격퇴! 적이 재집결합니다'); sfx('clear');
+    }
+  }
+  for(const e of enemies) if(!e.dead && (e.team??1)===1) e.mode = aiMode==='attack'?'attack':'defend';
 }
 
 /* ══════════════ 유닛 AI (팀 공용 — team 0=아군, 1=적) ══════════════ */
@@ -1085,7 +1173,12 @@ function updateEnemy(e,dt){
 }
 function hitBuild(b,dmg){
   b.hp-=dmg; b.flash=1;
-  if(b===core){ sfx('corehit'); addShake(1.0); }
+  if(b===core){
+    sfx('corehit'); addShake(1.0);
+    const frac=b.hp/b.maxhp;
+    const lvl = frac<0.25?3:(frac<0.5?2:(frac<0.75?1:0));
+    if(lvl>coreWarn){ coreWarn=lvl; banner(`⚠ 코어 HP ${lvl===1?75:lvl===2?50:25}% 미만!`); addShake(4); sfx('boss'); }
+  }
   if(b.hp<=0){
     if(b===core){ endGame(false); return; }
     if(b===core2){ endGame(true); return; } // 적 코어 파괴 → 승리
@@ -1280,7 +1373,15 @@ function damage(e,dmg){
   e.hp-=dmg; e.flash=1;
   if(e.hp<=0 && !e.dead){
     e.dead=true;
-    if((e.team??1)===0){ puff(e.x,e.y,'#ffd37f',5); return; } // 아군 병사 전사 — 보상 없음
+    if((e.team??1)===0){ // 아군 병사 전사 — 보상 없음, 파편 연출
+      for(let i=0;i<5;i++){
+        const a=rnd(0,Math.PI*2), sp=rnd(30,90);
+        parts.push({type:'shard', x:e.x, y:e.y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp,
+          rot:rnd(0,6.3), vr:rnd(-9,9), sz:rnd(2,4), t:rnd(0.3,0.5), max:0.9, c:'#ffd37f'});
+      }
+      sfx('die',1.5);
+      return;
+    }
     kills++;
     copper+=Math.ceil(e.reward*(1+0.25*Math.max(0,wave-20))); // 무한 구간: 보상도 스케일
     const nShard = e.boss ? 14 : 5;
@@ -1391,7 +1492,7 @@ function simStep(dt){
     // ── 스커미시: AI 틱 + 시간제한 판정 ──
     skirmishT+=dt;
     aiTickT-=dt;
-    if(aiTickT<=0){ aiTickT=2; aiTick(); }
+    if(aiTickT<=0){ aiTickT=1.25; aiTick(); }
     if(skirmishT>=SKIRMISH_LIMIT && !gameOver){
       endGame(core.hp/core.maxhp >= core2.hp/core2.maxhp); // 시간 초과 → 코어 HP 비율 판정
       return;
@@ -1450,7 +1551,11 @@ function updateHUD(){
           `⚔ 아군 ${allies}/${ARMY_CAP} (${allyMode==='attack'?'진군':'방어'}) · 적군 ${foes}`;
     const rem=Math.max(0,SKIRMISH_LIMIT-skirmishT);
     document.getElementById('wvnum').textContent='VS';
-    document.getElementById('wvtimer').textContent=`판정까지 ${Math.floor(rem/60)}:${String(Math.floor(rem%60)).padStart(2,'0')}`;
+    const wt=document.getElementById('wvtimer');
+    wt.textContent=`판정까지 ${Math.floor(rem/60)}:${String(Math.floor(rem%60)).padStart(2,'0')}`;
+    wt.style.color = rem<60 ? '#ff6a5a' : '';
+    document.getElementById('myhp').style.width=Math.max(0,core.hp/core.maxhp*100)+'%';
+    document.getElementById('aihp').style.width=Math.max(0,core2.hp/core2.maxhp*100)+'%';
   }
   document.getElementById('info').innerHTML=
     `<span class="cu">⛏ 구리 ${Math.floor(copper)}</span>\n`+
@@ -1466,13 +1571,16 @@ function updateHUD(){
   if(mode==='skirmish'){
     const hasBk=builds.some(b=>b.type==='barracks'&&(b.team||0)===0);
     const allies=enemies.filter(e=>!e.dead&&(e.team??1)===0).length;
-    if(!hasBk){ g.style.display='block'; g.innerHTML='① <b>병영</b>(핫바 맨 끝)을 짓고 경제를 돌리세요 — 구리 60마다 병사 훈련'; }
+    if(!hasBk){ g.style.display='block'; g.innerHTML='① <b>병영</b>(핫바 맨 끝)을 짓고 경제를 돌리세요 — 구리 50마다 병사 훈련'; }
     else if(allies<4){ g.style.display='block'; g.innerHTML='② 병사가 모이는 중 — 드릴·컨베이어로 경제를 키우면 훈련이 빨라집니다'; }
     else if(allyMode==='defend'){ g.style.display='block'; g.innerHTML='③ 병력이 모이면 <b>⚔ 진군</b> — 벨트로 <b>합금=중장병</b>·<b>실리콘=유도병</b>을 병영에 꽂을 수 있습니다'; }
     else if(noAmmo>0){ g.style.display='block'; g.innerHTML=`⚠ <b>탄약 없는 포탑 ${noAmmo}개</b>`; }
     else g.style.display='none';
     if(selPos) refreshPanel();
-    document.getElementById('wvnext').textContent='';
+    const nx2=document.getElementById('wvnext');
+    if(aiPush.phase==='warn') nx2.textContent=`⚠ 적 공세까지 ${Math.max(0,Math.ceil(aiPush.warnT))}초!`;
+    else if(aiPush.phase==='attack') nx2.textContent='💥 적 공세 진행 중!';
+    else nx2.textContent=`적 집결 중 (${aiPush.rally}기 규모)`;
     return;
   }
   if(wave===0){
@@ -1731,6 +1839,16 @@ function render(){
     }
   }
   if(render.vg){ ctx.fillStyle=render.vg; ctx.fillRect(0,0,cv.width,cv.height); }
+  // 위기 비네트: 코어 HP 50% 미만이면 화면 가장자리 붉은 맥동
+  if(started && !gameOver && core && core.hp/core.maxhp<0.5){
+    const sev = core.hp/core.maxhp<0.25 ? 1.7 : 1;
+    const a=(0.10+0.09*Math.sin(performance.now()/170))*sev;
+    ctx.fillStyle=`rgba(232,56,42,${Math.max(0,a)})`;
+    ctx.fillRect(0,0,cv.width,26); ctx.fillRect(0,cv.height-26,cv.width,26);
+    ctx.fillRect(0,0,26,cv.height); ctx.fillRect(cv.width-26,0,26,cv.height);
+  }
+  drawMinimap.n=(drawMinimap.n||0)+1;
+  if(started && drawMinimap.n%4===0) drawMinimap();
   // 보스 HP바
   const boss=enemies.find(e=>e.type==='boss' && !e.dead);
   if(boss){
@@ -1791,7 +1909,7 @@ function drawBuild(b){
       const kc=KIND_COL[it.k]||KIND_COL.c;
       ctx.fillStyle=kc[0]; ctx.strokeStyle=kc[1];
       const ix=(it.p-0.5)*TILE;
-      ctx.fillRect(ix-3.2,-3.2,6.4,6.4); ctx.strokeRect(ix-3.2,-3.2,6.4,6.4);
+      ctx.fillRect(ix-4,-4,8,8); ctx.strokeRect(ix-4,-4,8,8);
     }
     ctx.restore();
   } else if(b.type==='barracks'){
@@ -1932,6 +2050,7 @@ function drawBuild(b){
 }
 function drawEnemy(e){
   ctx.save(); ctx.translate(e.x,e.y);
+  ctx.scale(1.35,1.35); // 가독성: 유닛 확대
   if(e.flash>0){ // 피격 섬광
     ctx.fillStyle=`rgba(255,255,255,${e.flash*0.5})`;
     ctx.beginPath(); ctx.arc(0,0,e.r+2,0,7); ctx.fill();
@@ -2191,6 +2310,7 @@ document.getElementById('startbtn').onclick=()=>{
   if(netMode==='guest') return; // init 수신 시 자동 입장
   document.getElementById('start').style.display='none';
   document.getElementById('hud').style.display='block';
+  cam.z=1.7; cam.x=(core.x-6)*TILE; cam.y=(core.y+1)*TILE; applyCam();
   started=true;
 };
 document.getElementById('skirmishbtn').onclick=()=>{
@@ -2202,8 +2322,10 @@ document.getElementById('skirmishbtn').onclick=()=>{
   document.getElementById('start').style.display='none';
   document.getElementById('hud').style.display='block';
   document.getElementById('wavebtn').textContent='⚔ 진군';
+  document.getElementById('score').style.display='block';
+  cam.z=2.1; cam.x=(core.x+7)*TILE; cam.y=(core.y+1)*TILE; applyCam();
   started=true;
-  banner('⚔ 적 코어를 파괴하라!');
+  banner('⚔ 적 코어를 파괴하라! (미니맵 우하단)');
 };
 if(new URLSearchParams(location.search).get('room')){
   document.getElementById('startbtn').textContent='🤝 협동 참가';
